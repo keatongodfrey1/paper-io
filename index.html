@@ -23,22 +23,53 @@
   .hint { font-size: 12px; opacity: .5; text-align: center; }
   .hint b { color: var(--accent); opacity: .95; }
 
+  /* hide in-game chrome while the menu is open (keeps space so the board doesn't jump) */
+  body.menuing h1, body.menuing #hud, body.menuing .hint { visibility: hidden; }
+
   #menu {
     position: absolute; inset: 0; border-radius: 10px;
-    background: rgba(8,10,16,0.82);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px;
+    background: rgba(8,10,16,0.78);
+    -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+    display: flex; align-items: center; justify-content: center;
   }
-  #menuTitle { font-size: 40px; font-weight: 700; }
-  #menuSub { font-size: 14px; opacity: .8; margin-bottom: 8px; text-align: center; max-width: 80%; }
-  #menu .row { display: flex; align-items: center; gap: 10px; }
-  #menu .rlabel { width: 78px; text-align: right; font-size: 13px; opacity: .7; }
+  #menu .panel {
+    background: rgba(23,27,38,0.97);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 16px;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05);
+    padding: 30px 38px 34px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  #menuTitle { font-size: 46px; font-weight: 800; letter-spacing: -1.4px; line-height: 1; }
+  #menuTitle .dot { color: var(--accent); }
+  #menuSub { font-size: 13.5px; opacity: .6; margin-top: 9px; margin-bottom: 22px; text-align: center; }
+  #menu .opts { display: grid; grid-template-columns: auto auto; column-gap: 18px; row-gap: 12px; align-items: center; }
+  #menu .row { display: contents; }
+  #menu .rlabel { text-align: right; font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; opacity: .45; }
+  #menu .ctl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
   #menu .pills { display: flex; gap: 6px; }
-  #menu .pill { background: rgba(255,255,255,0.10); color: #cdd3df; border: none; border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  #menu .pill, #menu .stepper button {
+    background: rgba(255,255,255,0.08); color: #cdd3df; border: 1px solid transparent;
+    border-radius: 9px; cursor: pointer; font-family: inherit;
+    transition: background .12s ease, color .12s ease, filter .12s ease, transform .08s ease;
+  }
+  #menu .pill { padding: 7px 13px; font-size: 13px; font-weight: 600; }
+  #menu .pill:hover { background: rgba(255,255,255,0.16); color: #fff; }
   #menu .pill.sel { background: var(--accent); color: #fff; }
+  #menu .pill.sel:hover { filter: brightness(1.08); }
   #menu .stepper { display: flex; align-items: center; gap: 8px; }
-  #menu .stepper button { width: 30px; height: 30px; border-radius: 8px; border: none; background: rgba(255,255,255,0.12); color: #fff; font-size: 18px; cursor: pointer; line-height: 1; }
-  #menu #botCount { min-width: 22px; text-align: center; font-weight: 600; }
-  #startBtn { margin-top: 12px; background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 11px 32px; font-size: 16px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  #menu .stepper button { width: 30px; height: 30px; font-size: 18px; line-height: 1; color: #fff; }
+  #menu .stepper button:hover { background: rgba(255,255,255,0.18); }
+  #menu .stepper button:active { transform: scale(0.9); }
+  #menu #botCount, #menu #winValue { min-width: 42px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #startBtn {
+    align-self: stretch; margin-top: 26px; background: var(--accent); color: #fff; border: none;
+    border-radius: 11px; padding: 13px 32px; font-size: 16px; font-weight: 700; cursor: pointer; font-family: inherit;
+    box-shadow: 0 8px 22px rgba(255,77,109,0.32); transition: background .12s ease, transform .1s ease, box-shadow .12s ease;
+  }
+  #startBtn:hover { background: #ff6178; transform: translateY(-1px); box-shadow: 0 10px 26px rgba(255,77,109,0.42); }
+  #startBtn:active { transform: translateY(0); box-shadow: 0 6px 16px rgba(255,77,109,0.3); }
+  #menu button:focus-visible, #menu .pill:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   #menuBtn { position: absolute; top: 8px; left: 8px; display: none; background: rgba(20,24,34,0.85); color: #cdd3df; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; z-index: 5; }
   #menuBtn:hover { background: rgba(40,46,62,0.95); }
 </style>
@@ -50,14 +81,18 @@
     <canvas id="game"></canvas>
     <button id="menuBtn">Menu</button>
     <div id="menu">
-      <div id="menuTitle">Paper.io</div>
-      <div id="menuSub">Set up your game, then press Start</div>
-      <div class="row"><span class="rlabel">Difficulty</span><span class="pills" data-group="difficulty"></span></div>
-      <div class="row"><span class="rlabel">Board</span><span class="pills" data-group="board"></span></div>
-      <div class="row"><span class="rlabel">Speed</span><span class="pills" data-group="speed"></span></div>
-      <div class="row"><span class="rlabel">Win</span><span class="pills" data-group="win"></span><span class="stepper"><button id="winMinus">&minus;</button><span id="winValue">100%</span><button id="winPlus">+</button></span></div>
-      <div class="row"><span class="rlabel">Bots</span><span class="stepper"><button id="botMinus">&minus;</button><span id="botCount">3</span><button id="botPlus">+</button></span></div>
-      <button id="startBtn">Start</button>
+      <div class="panel">
+        <div id="menuTitle">Paper<span class="dot">.io</span></div>
+        <div id="menuSub">Set up your game, then press Start</div>
+        <div class="opts">
+          <div class="row"><span class="rlabel">Difficulty</span><div class="ctl"><span class="pills" data-group="difficulty"></span></div></div>
+          <div class="row"><span class="rlabel">Board</span><div class="ctl"><span class="pills" data-group="board"></span></div></div>
+          <div class="row"><span class="rlabel">Speed</span><div class="ctl"><span class="pills" data-group="speed"></span></div></div>
+          <div class="row"><span class="rlabel">Win</span><div class="ctl"><span class="pills" data-group="win"></span><span class="stepper"><button id="winMinus">&minus;</button><span id="winValue">100%</span><button id="winPlus">+</button></span></div></div>
+          <div class="row"><span class="rlabel">Bots</span><div class="ctl"><span class="stepper"><button id="botMinus">&minus;</button><span id="botCount">3</span><button id="botPlus">+</button></span></div></div>
+        </div>
+        <button id="startBtn">Start</button>
+      </div>
     </div>
   </div>
   <div class="hint">
@@ -249,8 +284,13 @@
   }
   function fmtTime(s) { return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
   function updateWinStepper() { document.getElementById("winValue").textContent = settings.win === "timed" ? fmtTime(settings.winSecs) : settings.winPct + "%"; }
-  function showMenu(title, sub) { document.getElementById("menuTitle").textContent = title; document.getElementById("menuSub").textContent = sub; menu.style.display = "flex"; menuBtn.style.display = "none"; }
-  function hideMenu() { menu.style.display = "none"; }
+  function showMenu(title, sub) {
+    const t = document.getElementById("menuTitle");
+    if (title === "Paper.io") t.innerHTML = 'Paper<span class="dot">.io</span>'; else t.textContent = title;
+    document.getElementById("menuSub").textContent = sub;
+    menu.style.display = "flex"; menuBtn.style.display = "none"; document.body.classList.add("menuing");
+  }
+  function hideMenu() { menu.style.display = "none"; document.body.classList.remove("menuing"); }
   function toMenu() { state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
 
   // ===========================================================================
