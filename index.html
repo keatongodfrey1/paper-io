@@ -55,7 +55,7 @@
       <div class="row"><span class="rlabel">Difficulty</span><span class="pills" data-group="difficulty"></span></div>
       <div class="row"><span class="rlabel">Board</span><span class="pills" data-group="board"></span></div>
       <div class="row"><span class="rlabel">Speed</span><span class="pills" data-group="speed"></span></div>
-      <div class="row"><span class="rlabel">Win</span><span class="pills" data-group="win"></span></div>
+      <div class="row"><span class="rlabel">Win</span><span class="pills" data-group="win"></span><span class="stepper"><button id="winMinus">&minus;</button><span id="winValue">100%</span><button id="winPlus">+</button></span></div>
       <div class="row"><span class="rlabel">Bots</span><span class="stepper"><button id="botMinus">&minus;</button><span id="botCount">3</span><button id="botPlus">+</button></span></div>
       <button id="startBtn">Start</button>
     </div>
@@ -77,7 +77,6 @@
   const SHAKE_MS = 240, SHAKE_MAG = 9;
   const FLASH_MS = 320, WAVE_MS_PER_CELL = 8;
   const DEATH_MS = 750;
-  const TIMED_LIMIT = 120000;   // ms for the "Timed" win mode
   const SPAWN_INTERVAL = 7000;  // ms between topping bots back up to the chosen count
 
   const DIFFS = {
@@ -88,22 +87,21 @@
   };
   const BOARD_CELL = { small: 16, medium: 12, large: 9 };
   const SPEED_TICK = { slow: 110, normal: 75, fast: 50 };
-  const WIN_THR = { full: 1.0, half: 0.5, timed: null };
-  const MAX_BOTS = 10;
+  const MAX_BOTS = 30;
 
   const MENU_GROUPS = {
     difficulty: [["easy", "Easy"], ["normal", "Normal"], ["hard", "Hard"], ["extreme", "Extreme"]],
     board: [["small", "Small"], ["medium", "Medium"], ["large", "Large"]],
     speed: [["slow", "Slow"], ["normal", "Normal"], ["fast", "Fast"]],
-    win: [["full", "Reach 100%"], ["half", "First to 50%"], ["timed", "Timed 2 min"]],
+    win: [["target", "Target %"], ["timed", "Timed"]],
   };
-  const settings = { difficulty: "normal", board: "small", speed: "normal", win: "full", bots: 3 };
+  const settings = { difficulty: "normal", board: "small", speed: "normal", win: "target", winPct: 100, winSecs: 120, bots: 3 };
 
   // resolved each game from settings
-  let difficulty, numBots, CELL, tickMs, winCond;
+  let difficulty, numBots, CELL, tickMs, winCond, winThreshold, timedLimitMs;
 
   const PLAYER_COL = { land: "#ff4d6d", trail: "#ff8fa6", head: "#ffd1da" };
-  function botColor(i) { const h = Math.round((40 + i * 308 / 10) % 360); return { land: "hsl(" + h + ",66%,56%)", trail: "hsl(" + h + ",82%,72%)", head: "hsl(" + h + ",90%,86%)" }; }
+  function botColor(i) { const h = Math.round((i * 137.508 + 25) % 360); return { land: "hsl(" + h + ",66%,56%)", trail: "hsl(" + h + ",82%,72%)", head: "hsl(" + h + ",90%,86%)" }; }
   const COLORS = { board: "#1b2030", grid: "#232a3d", flash: "#ffffff", trailEdge: "rgba(10,12,20,0.9)" };
 
   // ===========================================================================
@@ -129,7 +127,9 @@
     numBots = settings.bots;
     CELL = BOARD_CELL[settings.board];
     tickMs = SPEED_TICK[settings.speed];
-    winCond = settings.win;
+    winCond = settings.win;                  // 'target' | 'timed'
+    winThreshold = settings.winPct / 100;
+    timedLimitMs = settings.winSecs * 1000;
   }
 
   function fitBoard() {
@@ -230,13 +230,16 @@
         const b = document.createElement("button");
         b.className = "pill" + (settings[g] === k ? " sel" : "");
         b.textContent = label;
-        b.onclick = () => { settings[g] = k; refreshSel(g); };
+        b.onclick = () => { settings[g] = k; refreshSel(g); if (g === "win") updateWinStepper(); };
         box.appendChild(b);
       }
     }
     botCountEl.textContent = settings.bots;
     document.getElementById("botMinus").onclick = () => { settings.bots = Math.max(0, settings.bots - 1); botCountEl.textContent = settings.bots; };
     document.getElementById("botPlus").onclick = () => { settings.bots = Math.min(MAX_BOTS, settings.bots + 1); botCountEl.textContent = settings.bots; };
+    document.getElementById("winMinus").onclick = () => { if (settings.win === "timed") settings.winSecs = Math.max(30, settings.winSecs - 30); else settings.winPct = Math.max(10, settings.winPct - 5); updateWinStepper(); };
+    document.getElementById("winPlus").onclick = () => { if (settings.win === "timed") settings.winSecs = Math.min(600, settings.winSecs + 30); else settings.winPct = Math.min(100, settings.winPct + 5); updateWinStepper(); };
+    updateWinStepper();
     document.getElementById("startBtn").onclick = () => newGame();
     menuBtn.onclick = () => toMenu();
   }
@@ -244,6 +247,8 @@
     const box = menu.querySelector('.pills[data-group="' + g + '"]');
     [...box.children].forEach((b, i) => b.classList.toggle("sel", MENU_GROUPS[g][i][0] === settings[g]));
   }
+  function fmtTime(s) { return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+  function updateWinStepper() { document.getElementById("winValue").textContent = settings.win === "timed" ? fmtTime(settings.winSecs) : settings.winPct + "%"; }
   function showMenu(title, sub) { document.getElementById("menuTitle").textContent = title; document.getElementById("menuSub").textContent = sub; menu.style.display = "flex"; menuBtn.style.display = "none"; }
   function hideMenu() { menu.style.display = "none"; }
   function toMenu() { state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
@@ -422,10 +427,9 @@
     const counts = countTerritory(), total = COLS * ROWS;
     if ((counts[PLAYER_ID] || 0) === 0 && player.alive) { player.alive = false; endGame("Wiped out", "A bot took all your land. " + leaderName(counts) + " leads. Press Start to play again."); return; }
     for (const a of actors) if (a.isBot && a.alive && (counts[a.id] || 0) === 0) a.alive = false;
-    const thr = WIN_THR[winCond];
-    if (thr != null && (counts[claimer.id] || 0) >= total * thr)
+    if (winCond === "target" && (counts[claimer.id] || 0) >= total * winThreshold)
       endGame(claimer.id === PLAYER_ID ? "You win!" : "Bot " + (claimer.id - 1) + " wins",
-              (thr < 1 ? "First past " + (thr * 100) + "%. " : "Claimed the whole board. ") + "Press Start to play again.");
+              (winThreshold < 1 ? "First past " + Math.round(winThreshold * 100) + "%. " : "Claimed the whole board. ") + "Press Start to play again.");
   }
   function endGame(title, sub) { state = "over"; overTitle = title; overSub = sub; showMenu(title, sub); }
 
@@ -554,7 +558,7 @@
     const items = actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
     let html = "";
     if (winCond === "timed" && (state === "playing" || state === "paused")) {
-      const left = Math.max(0, TIMED_LIMIT - (performance.now() - playStart)), s = Math.ceil(left / 1000);
+      const left = Math.max(0, timedLimitMs - (performance.now() - playStart)), s = Math.ceil(left / 1000);
       html += '<span class="chip" style="opacity:.75">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
     }
     html += '<span class="chip" style="opacity:.55">' + DIFFS[difficulty].label + "</span>";
@@ -572,7 +576,7 @@
       acc += now - last; last = now;
       if (acc > tickMs * 5) acc = tickMs * 5;
       while (acc >= tickMs) { step(); if (state !== "playing") break; acc -= tickMs; }
-      if (state === "playing" && winCond === "timed" && now - playStart >= TIMED_LIMIT) {
+      if (state === "playing" && winCond === "timed" && now - playStart >= timedLimitMs) {
         const counts = countTerritory(), lead = leaderName(counts);
         endGame(lead === "You" ? "Time! You win" : "Time! " + lead + " wins", "Most territory when the clock ran out. Press Start to play again.");
       }
