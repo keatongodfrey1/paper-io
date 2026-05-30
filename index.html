@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Paper.io Clone — Phase 1</title>
+<style>
+  :root { --bg: #10131a; --board: #1b2030; --accent: #ff4d6d; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: #e7ebf3;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; user-select: none; -webkit-user-select: none;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .3px; opacity: .9; }
+  #wrap { position: relative; }
+  canvas { background: var(--board); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.5); display: block; }
+  #hud { display: flex; gap: 14px; font-size: 13px; opacity: .92; flex-wrap: wrap; justify-content: center; min-height: 14px; }
+  #hud .chip { display: inline-flex; align-items: center; gap: 6px; }
+  #hud i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .hint { font-size: 12px; opacity: .5; text-align: center; }
+  .hint b { color: var(--accent); opacity: .95; }
+
+  #menu {
+    position: absolute; inset: 0; border-radius: 10px;
+    background: rgba(8,10,16,0.82);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px;
+  }
+  #menuTitle { font-size: 40px; font-weight: 700; }
+  #menuSub { font-size: 14px; opacity: .8; margin-bottom: 8px; text-align: center; max-width: 80%; }
+  #menu .row { display: flex; align-items: center; gap: 10px; }
+  #menu .rlabel { width: 78px; text-align: right; font-size: 13px; opacity: .7; }
+  #menu .pills { display: flex; gap: 6px; }
+  #menu .pill { background: rgba(255,255,255,0.10); color: #cdd3df; border: none; border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  #menu .pill.sel { background: var(--accent); color: #fff; }
+  #menu .stepper { display: flex; align-items: center; gap: 8px; }
+  #menu .stepper button { width: 30px; height: 30px; border-radius: 8px; border: none; background: rgba(255,255,255,0.12); color: #fff; font-size: 18px; cursor: pointer; line-height: 1; }
+  #menu #botCount { min-width: 22px; text-align: center; font-weight: 600; }
+  #startBtn { margin-top: 12px; background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 11px 32px; font-size: 16px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  #menuBtn { position: absolute; top: 8px; left: 8px; display: none; background: rgba(20,24,34,0.85); color: #cdd3df; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; z-index: 5; }
+  #menuBtn:hover { background: rgba(40,46,62,0.95); }
+</style>
+</head>
+<body>
+  <h1>Claim the whole board</h1>
+  <div id="hud"></div>
+  <div id="wrap">
+    <canvas id="game"></canvas>
+    <button id="menuBtn">Menu</button>
+    <div id="menu">
+      <div id="menuTitle">Paper.io</div>
+      <div id="menuSub">Set up your game, then press Start</div>
+      <div class="row"><span class="rlabel">Difficulty</span><span class="pills" data-group="difficulty"></span></div>
+      <div class="row"><span class="rlabel">Board</span><span class="pills" data-group="board"></span></div>
+      <div class="row"><span class="rlabel">Speed</span><span class="pills" data-group="speed"></span></div>
+      <div class="row"><span class="rlabel">Win</span><span class="pills" data-group="win"></span></div>
+      <div class="row"><span class="rlabel">Bots</span><span class="stepper"><button id="botMinus">&minus;</button><span id="botCount">3</span><button id="botPlus">+</button></span></div>
+      <button id="startBtn">Start</button>
+    </div>
+  </div>
+  <div class="hint">
+    Arrow keys or <b>WASD</b> to move &nbsp;·&nbsp; loop back to claim &nbsp;·&nbsp;
+    cut a trail to take that land &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ===========================================================================
+  // CONFIG + SETTINGS
+  // ===========================================================================
+  const START_BLOCK = 5;
+  const COUNT_STEP = 750, GO_MS = 550, COUNTDOWN_TOTAL = 3 * COUNT_STEP + GO_MS;
+  const SHAKE_MS = 240, SHAKE_MAG = 9;
+  const FLASH_MS = 320, WAVE_MS_PER_CELL = 8;
+  const DEATH_MS = 750;
+  const TIMED_LIMIT = 120000;   // ms for the "Timed" win mode
+  const SPAWN_INTERVAL = 7000;  // ms between topping bots back up to the chosen count
+
+  const DIFFS = {
+    easy:    { label: "Easy",    legOut: [2, 5],  legSide: [2, 4], speed: 1 },
+    normal:  { label: "Normal",  legOut: [4, 7],  legSide: [3, 6], speed: 2 },
+    hard:    { label: "Hard",    legOut: [5, 9],  legSide: [3, 7], speed: 3 },
+    extreme: { label: "Extreme", legOut: [6, 11], legSide: [4, 8], speed: 4 },
+  };
+  const BOARD_CELL = { small: 16, medium: 12, large: 9 };
+  const SPEED_TICK = { slow: 110, normal: 75, fast: 50 };
+  const WIN_THR = { full: 1.0, half: 0.5, timed: null };
+  const MAX_BOTS = 10;
+
+  const MENU_GROUPS = {
+    difficulty: [["easy", "Easy"], ["normal", "Normal"], ["hard", "Hard"], ["extreme", "Extreme"]],
+    board: [["small", "Small"], ["medium", "Medium"], ["large", "Large"]],
+    speed: [["slow", "Slow"], ["normal", "Normal"], ["fast", "Fast"]],
+    win: [["full", "Reach 100%"], ["half", "First to 50%"], ["timed", "Timed 2 min"]],
+  };
+  const settings = { difficulty: "normal", board: "small", speed: "normal", win: "full", bots: 3 };
+
+  // resolved each game from settings
+  let difficulty, numBots, CELL, tickMs, winCond;
+
+  const PLAYER_COL = { land: "#ff4d6d", trail: "#ff8fa6", head: "#ffd1da" };
+  function botColor(i) { const h = Math.round((40 + i * 308 / 10) % 360); return { land: "hsl(" + h + ",66%,56%)", trail: "hsl(" + h + ",82%,72%)", head: "hsl(" + h + ",90%,86%)" }; }
+  const COLORS = { board: "#1b2030", grid: "#232a3d", flash: "#ffffff", trailEdge: "rgba(10,12,20,0.9)" };
+
+  // ===========================================================================
+  // STATE
+  // ===========================================================================
+  const EMPTY = 0, PLAYER_ID = 1;
+  let COLS, ROWS;
+  let grid, trailOwner, actors, actorById, player, flashes, comp;
+  let shakeStart = -1e9;
+  let state = "start";        // start | countdown | playing | paused | dying | over
+  let phaseStart = 0, playStart = 0;
+  let nextId = 0, botSpawnCount = 0, lastSpawn = 0;
+  let overTitle = "", overSub = "";
+
+  const key = (x, y) => x + "," + y;
+  const inBounds = (x, y) => x >= 0 && x < COLS && y >= 0 && y < ROWS;
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  function applySettings() {
+    difficulty = settings.difficulty;
+    numBots = settings.bots;
+    CELL = BOARD_CELL[settings.board];
+    tickMs = SPEED_TICK[settings.speed];
+    winCond = settings.win;
+  }
+
+  function fitBoard() {
+    const availW = Math.max(320, window.innerWidth - 40);
+    const availH = Math.max(320, window.innerHeight - 170);
+    COLS = Math.max(28, Math.min(180, Math.floor(availW / CELL)));
+    ROWS = Math.max(20, Math.min(120, Math.floor(availH / CELL)));
+    canvas.width = COLS * CELL;
+    canvas.height = ROWS * CELL;
+    comp = new Int16Array(COLS * ROWS);
+  }
+
+  // ===========================================================================
+  // WORLD SETUP (region-based starts so nobody clumps)
+  // ===========================================================================
+  function regionHomes(n) {
+    const pad = ((START_BLOCK / 2) | 0) + 2;
+    const gx = Math.ceil(Math.sqrt(n)), gy = Math.ceil(n / gx);
+    const regions = [];
+    for (let ry = 0; ry < gy; ry++) for (let rx = 0; rx < gx; rx++) regions.push({ rx, ry });
+    for (let i = regions.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [regions[i], regions[j]] = [regions[j], regions[i]]; }
+    const cellW = (COLS - 2 * pad) / gx, cellH = (ROWS - 2 * pad) / gy;
+    const homes = [];
+    for (let i = 0; i < n; i++) {
+      const { rx, ry } = regions[i];
+      const x = Math.round(pad + rx * cellW + cellW * (0.25 + 0.5 * Math.random()));
+      const y = Math.round(pad + ry * cellH + cellH * (0.25 + 0.5 * Math.random()));
+      homes.push({ x: Math.max(pad, Math.min(COLS - 1 - pad, x)), y: Math.max(pad, Math.min(ROWS - 1 - pad, y)) });
+    }
+    return homes;
+  }
+
+  function buildWorld() {
+    grid = Array.from({ length: ROWS }, () => new Array(COLS).fill(EMPTY));
+    trailOwner = new Map();
+    flashes = [];
+    actors = []; actorById = {};
+    const total = 1 + numBots;
+    const homes = regionHomes(total);
+    const sp = DIFFS[difficulty].speed;
+    for (let i = 0; i < total; i++) {
+      const a = {
+        id: i + 1, isBot: i > 0, color: i === 0 ? PLAYER_COL : botColor(i - 1),
+        alive: true, speed: i > 0 ? sp : 1,
+        x: homes[i].x, y: homes[i].y, homeCx: homes[i].x, homeCy: homes[i].y,
+        dx: 0, dy: 0, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+      };
+      actors.push(a); actorById[a.id] = a; stampHome(a);
+    }
+    player = actorById[PLAYER_ID];
+    nextId = total + 1; botSpawnCount = numBots;
+  }
+
+  function stampHome(a) {
+    const r = (START_BLOCK / 2) | 0;
+    for (let y = a.homeCy - r; y <= a.homeCy + r; y++)
+      for (let x = a.homeCx - r; x <= a.homeCx + r; x++)
+        if (inBounds(x, y)) grid[y][x] = a.id;
+  }
+
+  // A fresh bot drops in on an open patch with a normal-sized home.
+  function spawnBot() {
+    const r = (START_BLOCK / 2) | 0, pad = r + 1;
+    let cx = -1, cy = -1;
+    for (let t = 0; t < 60 && cx < 0; t++) {
+      const x = pad + ((Math.random() * (COLS - 2 * pad)) | 0), y = pad + ((Math.random() * (ROWS - 2 * pad)) | 0);
+      let ok = true;
+      for (let yy = y - r; yy <= y + r && ok; yy++) for (let xx = x - r; xx <= x + r; xx++) if (!inBounds(xx, yy) || grid[yy][xx] !== EMPTY) { ok = false; break; }
+      if (ok) { cx = x; cy = y; }
+    }
+    if (cx < 0) return;   // board too full, skip this round
+    const a = {
+      id: nextId++, isBot: true, color: botColor(botSpawnCount++), alive: true, speed: DIFFS[difficulty].speed,
+      x: cx, y: cy, homeCx: cx, homeCy: cy, dx: 0, dy: 0, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+    };
+    actors.push(a); actorById[a.id] = a; stampHome(a);
+    const now = performance.now();
+    for (let yy = cy - r; yy <= cy + r; yy++) for (let xx = cx - r; xx <= cx + r; xx++) if (inBounds(xx, yy)) flashes.push({ x: xx, y: yy, start: now });
+  }
+
+  function newGame() {
+    ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block";
+    fitBoard(); buildWorld(); updateHUD();
+    state = "countdown"; phaseStart = performance.now();
+  }
+
+  // ===========================================================================
+  // SETTINGS MENU (DOM)
+  // ===========================================================================
+  const menu = document.getElementById("menu");
+  const botCountEl = document.getElementById("botCount");
+  const menuBtn = document.getElementById("menuBtn");
+  function buildMenu() {
+    for (const g in MENU_GROUPS) {
+      const box = menu.querySelector('.pills[data-group="' + g + '"]');
+      box.innerHTML = "";
+      for (const [k, label] of MENU_GROUPS[g]) {
+        const b = document.createElement("button");
+        b.className = "pill" + (settings[g] === k ? " sel" : "");
+        b.textContent = label;
+        b.onclick = () => { settings[g] = k; refreshSel(g); };
+        box.appendChild(b);
+      }
+    }
+    botCountEl.textContent = settings.bots;
+    document.getElementById("botMinus").onclick = () => { settings.bots = Math.max(0, settings.bots - 1); botCountEl.textContent = settings.bots; };
+    document.getElementById("botPlus").onclick = () => { settings.bots = Math.min(MAX_BOTS, settings.bots + 1); botCountEl.textContent = settings.bots; };
+    document.getElementById("startBtn").onclick = () => newGame();
+    menuBtn.onclick = () => toMenu();
+  }
+  function refreshSel(g) {
+    const box = menu.querySelector('.pills[data-group="' + g + '"]');
+    [...box.children].forEach((b, i) => b.classList.toggle("sel", MENU_GROUPS[g][i][0] === settings[g]));
+  }
+  function showMenu(title, sub) { document.getElementById("menuTitle").textContent = title; document.getElementById("menuSub").textContent = sub; menu.style.display = "flex"; menuBtn.style.display = "none"; }
+  function hideMenu() { menu.style.display = "none"; }
+  function toMenu() { state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
+
+  // ===========================================================================
+  // INPUT
+  // ===========================================================================
+  const DIRS = {
+    ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+    w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0], W: [0, -1], S: [0, 1], A: [-1, 0], D: [1, 0],
+  };
+  addEventListener("keydown", (e) => {
+    if (state === "start" || state === "over") {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); newGame(); }
+      return;
+    }
+    if (e.key === "Escape") { toMenu(); return; }
+    if (e.key === " " || e.key === "p" || e.key === "P") {
+      e.preventDefault();
+      if (state === "playing") state = "paused";
+      else if (state === "paused") { state = "playing"; last = performance.now(); acc = 0; }
+      return;
+    }
+    if (e.key === "r" || e.key === "R") { newGame(); return; }
+    if (state !== "playing") return;
+    const d = DIRS[e.key];
+    if (!d) return;
+    e.preventDefault(); ensureAudio();
+    player.dx = d[0]; player.dy = d[1];
+  }, { passive: false });
+
+  // ===========================================================================
+  // UPDATE
+  // ===========================================================================
+  function step() {
+    if (state !== "playing") return;
+    for (const a of actors) {
+      if (!a.alive) continue;
+      const reps = a.isBot ? a.speed : 1;
+      for (let r = 0; r < reps && a.alive; r++) {
+        if (a.isBot) botThink(a);
+        moveActor(a);
+        if (state !== "playing") return;
+      }
+    }
+  }
+
+  function moveActor(a) {
+    if (a.dx === 0 && a.dy === 0) return;
+    const nx = a.x + a.dx, ny = a.y + a.dy;
+    if (!inBounds(nx, ny)) {
+      if (a.isBot) { a.ai.mode = "home"; const h = homeStep(a); a.dx = h[0]; a.dy = h[1]; }
+      else { a.dx = 0; a.dy = 0; }
+      return;
+    }
+    a.x = nx; a.y = ny;
+    const k = key(nx, ny);
+    // cut check first, so you can kill an opponent even inside your own land
+    const owner = trailOwner.get(k);
+    if (owner !== undefined) {
+      if (owner === a.id) { killActor(a, null); return; }
+      killActor(actorById[owner], a);
+      if (state !== "playing") return;
+    }
+    if (grid[ny][nx] === a.id) { if (a.trail.length > 0) claimFor(a); return; }
+    a.trail.push({ x: nx, y: ny }); a.trailSet.add(k); trailOwner.set(k, a.id);
+  }
+
+  // ===========================================================================
+  // CLAIM + STEAL
+  // ===========================================================================
+  function claimFor(a) {
+    for (const c of a.trail) { grid[c.y][c.x] = a.id; trailOwner.delete(key(c.x, c.y)); }
+    const outside = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+    const stack = [];
+    for (let x = 0; x < COLS; x++) { fl(x, 0, a, outside, stack); fl(x, ROWS - 1, a, outside, stack); }
+    for (let y = 0; y < ROWS; y++) { fl(0, y, a, outside, stack); fl(COLS - 1, y, a, outside, stack); }
+    while (stack.length) {
+      const [x, y] = stack.pop();
+      fl(x + 1, y, a, outside, stack); fl(x - 1, y, a, outside, stack);
+      fl(x, y + 1, a, outside, stack); fl(x, y - 1, a, outside, stack);
+    }
+    const captured = a.trail.slice();
+    const affected = new Set();
+    for (let y = 0; y < ROWS; y++)
+      for (let x = 0; x < COLS; x++)
+        if (grid[y][x] !== a.id && !outside[y][x]) { const prev = grid[y][x]; if (prev !== EMPTY) affected.add(prev); grid[y][x] = a.id; captured.push({ x, y }); }
+    const now = performance.now();
+    for (const c of captured) flashes.push({ x: c.x, y: c.y, start: now + (Math.abs(c.x - a.x) + Math.abs(c.y - a.y)) * WAVE_MS_PER_CELL });
+    if (!a.isBot) { shakeStart = now; playClaimSound(); }
+    if (a.isBot) { a.homeCx = a.x; a.homeCy = a.y; a.ai = { mode: "rest" }; }
+    a.trail = []; a.trailSet.clear();
+    for (const oid of affected) { const o = actorById[oid]; if (o && o.alive) pruneTerritory(o); }
+    checkEndgame(a);
+  }
+  function fl(x, y, a, outside, stack) {
+    if (!inBounds(x, y) || outside[y][x] || grid[y][x] === a.id) return;
+    outside[y][x] = true; stack.push([x, y]);
+  }
+
+  // Keep only ONE connected blob of an actor's land (under its head, or the largest).
+  function pruneTerritory(a) {
+    const id = a.id;
+    comp.fill(-1);
+    const sizes = []; let nc = 0;
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+      if (grid[y][x] !== id || comp[y * COLS + x] !== -1) continue;
+      let sz = 0; const st = [x + y * COLS]; comp[y * COLS + x] = nc;
+      while (st.length) {
+        const idx = st.pop(); sz++;
+        const cx = idx % COLS, cy = (idx / COLS) | 0;
+        if (cx + 1 < COLS && grid[cy][cx + 1] === id && comp[idx + 1] === -1) { comp[idx + 1] = nc; st.push(idx + 1); }
+        if (cx - 1 >= 0 && grid[cy][cx - 1] === id && comp[idx - 1] === -1) { comp[idx - 1] = nc; st.push(idx - 1); }
+        if (cy + 1 < ROWS && grid[cy + 1][cx] === id && comp[idx + COLS] === -1) { comp[idx + COLS] = nc; st.push(idx + COLS); }
+        if (cy - 1 >= 0 && grid[cy - 1][cx] === id && comp[idx - COLS] === -1) { comp[idx - COLS] = nc; st.push(idx - COLS); }
+      }
+      sizes.push(sz); nc++;
+    }
+    if (nc <= 1) return;
+    let keep;
+    if (grid[a.y][a.x] === id) keep = comp[a.y * COLS + a.x];
+    else { keep = 0; for (let i = 1; i < nc; i++) if (sizes[i] > sizes[keep]) keep = i; }
+    const now = performance.now();
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === id && comp[y * COLS + x] !== keep) { grid[y][x] = EMPTY; flashes.push({ x, y, start: now }); }
+  }
+
+  // ===========================================================================
+  // DEATH / ABSORB
+  // ===========================================================================
+  function killActor(victim, killer) {
+    // Player death = classic full reset.
+    if (!victim.isBot) {
+      for (const c of victim.trail) trailOwner.delete(key(c.x, c.y));
+      victim.trail = []; victim.trailSet.clear();
+      state = "dying"; phaseStart = performance.now(); shakeStart = phaseStart; playDeathSound();
+      return;
+    }
+    const now = performance.now();
+    const taker = (killer && killer.alive && killer !== victim) ? killer : null;
+    const takeId = taker ? taker.id : EMPTY;
+
+    // The victim's whole trail SOLIDIFIES into the taker's land: a bridge from the
+    // cut point out to the victim's territory (freed to empty on a self-cut).
+    for (const c of victim.trail) { grid[c.y][c.x] = takeId; trailOwner.delete(key(c.x, c.y)); flashes.push({ x: c.x, y: c.y, start: now }); }
+    victim.trail = []; victim.trailSet.clear();
+
+    // The taker's own trail solidifies too, finishing the bridge back to its land,
+    // so the absorbed territory stays connected and survives the prune.
+    if (taker) {
+      for (const c of taker.trail) { grid[c.y][c.x] = taker.id; trailOwner.delete(key(c.x, c.y)); flashes.push({ x: c.x, y: c.y, start: now }); }
+      taker.trail = []; taker.trailSet.clear();
+    }
+
+    // Absorb (or free) the victim's territory.
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === victim.id) { grid[y][x] = takeId; flashes.push({ x, y, start: now }); }
+    victim.alive = false;
+
+    if (taker) { pruneTerritory(taker); if (!taker.isBot) { shakeStart = now; playClaimSound(); } }
+    checkEndgame(taker || victim);
+  }
+
+  // ===========================================================================
+  // ENDGAME
+  // ===========================================================================
+  function countTerritory() {
+    const c = {};
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) { const o = grid[y][x]; if (o) c[o] = (c[o] || 0) + 1; }
+    return c;
+  }
+  function leaderName(counts) {
+    let bid = 0, bc = -1;
+    for (const a of actors) { const n = counts[a.id] || 0; if (n > bc) { bc = n; bid = a.id; } }
+    return bid === PLAYER_ID ? "You" : "Bot " + (bid - 1);
+  }
+  function checkEndgame(claimer) {
+    const counts = countTerritory(), total = COLS * ROWS;
+    if ((counts[PLAYER_ID] || 0) === 0 && player.alive) { player.alive = false; endGame("Wiped out", "A bot took all your land. " + leaderName(counts) + " leads. Press Start to play again."); return; }
+    for (const a of actors) if (a.isBot && a.alive && (counts[a.id] || 0) === 0) a.alive = false;
+    const thr = WIN_THR[winCond];
+    if (thr != null && (counts[claimer.id] || 0) >= total * thr)
+      endGame(claimer.id === PLAYER_ID ? "You win!" : "Bot " + (claimer.id - 1) + " wins",
+              (thr < 1 ? "First past " + (thr * 100) + "%. " : "Claimed the whole board. ") + "Press Start to play again.");
+  }
+  function endGame(title, sub) { state = "over"; overTitle = title; overSub = sub; showMenu(title, sub); }
+
+  // ===========================================================================
+  // BOT AI
+  // ===========================================================================
+  function botThink(a) {
+    if (a.ai.mode === "home" && grid[a.y][a.x] === a.id) a.ai = { mode: "rest" };
+    let ai = a.ai;
+    if (ai.mode === "rest") { a.ai = planExcursion(a); ai = a.ai; }
+    if (ai.mode === "out") {
+      if (ai.stepsLeft > 0 && inBounds(a.x + ai.outDir[0], a.y + ai.outDir[1])) { a.dx = ai.outDir[0]; a.dy = ai.outDir[1]; ai.stepsLeft--; return; }
+      ai.mode = "across"; ai.stepsLeft = ai.legSide;
+    }
+    if (ai.mode === "across") {
+      if (ai.stepsLeft > 0 && inBounds(a.x + ai.sideDir[0], a.y + ai.sideDir[1])) { a.dx = ai.sideDir[0]; a.dy = ai.sideDir[1]; ai.stepsLeft--; return; }
+      ai.mode = "home";
+    }
+    const h = homeStep(a); a.dx = h[0]; a.dy = h[1];
+  }
+  function planExcursion(a) {
+    const D = DIFFS[difficulty];
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (let i = dirs.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [dirs[i], dirs[j]] = [dirs[j], dirs[i]]; }
+    let outDir = dirs[0];
+    for (const d of dirs) if (roomAhead(a, d, 8) >= 4) { outDir = d; break; }
+    const perps = outDir[0] !== 0 ? [[0, 1], [0, -1]] : [[1, 0], [-1, 0]];
+    const sideDir = perps[Math.random() < 0.5 ? 0 : 1];
+    const rng = (lo, hi) => lo + ((Math.random() * (hi - lo + 1)) | 0);
+    return { mode: "out", outDir, sideDir, legSide: rng(D.legSide[0], D.legSide[1]), stepsLeft: rng(D.legOut[0], D.legOut[1]) };
+  }
+  function roomAhead(a, d, max) { let n = 0, x = a.x, y = a.y; for (let i = 0; i < (max || 7); i++) { x += d[0]; y += d[1]; if (!inBounds(x, y)) break; n++; } return n; }
+  function homeStep(a) {
+    const tx = a.homeCx, ty = a.homeCy, cand = [];
+    if (Math.abs(tx - a.x) >= Math.abs(ty - a.y)) { if (tx !== a.x) cand.push([Math.sign(tx - a.x), 0]); if (ty !== a.y) cand.push([0, Math.sign(ty - a.y)]); }
+    else { if (ty !== a.y) cand.push([0, Math.sign(ty - a.y)]); if (tx !== a.x) cand.push([Math.sign(tx - a.x), 0]); }
+    cand.push([1, 0], [-1, 0], [0, 1], [0, -1]);
+    for (const [dx, dy] of cand) { const nx = a.x + dx, ny = a.y + dy; if (!inBounds(nx, ny) || a.trailSet.has(key(nx, ny))) continue; return [dx, dy]; }
+    return [a.dx || 1, a.dy || 0];
+  }
+
+  // ===========================================================================
+  // SOUND
+  // ===========================================================================
+  let audio = null;
+  function ensureAudio() {
+    if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { audio = null; } }
+    if (audio && audio.state === "suspended") audio.resume();
+  }
+  function tone(type, f0, f1, dur, peak) {
+    if (!audio) return;
+    const t = audio.currentTime, osc = audio.createOscillator(), gain = audio.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0, t); osc.frequency.exponentialRampToValueAtTime(f1, t + dur * 0.55);
+    gain.gain.setValueAtTime(0.0001, t); gain.gain.exponentialRampToValueAtTime(peak, t + 0.01); gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain).connect(audio.destination); osc.start(t); osc.stop(t + dur + 0.02);
+  }
+  function playClaimSound() { tone("triangle", 220, 70, 0.28, 0.5); }
+  function playDeathSound() { tone("sawtooth", 180, 45, 0.5, 0.4); }
+
+  // ===========================================================================
+  // RENDER
+  // ===========================================================================
+  function draw(now) {
+    ctx.save();
+    const sAge = now - shakeStart;
+    if (sAge < SHAKE_MS) { const k = (1 - sAge / SHAKE_MS) * SHAKE_MAG; ctx.translate((Math.random() * 2 - 1) * k, (Math.random() * 2 - 1) * k); }
+
+    ctx.fillStyle = COLORS.board;
+    ctx.fillRect(-SHAKE_MAG, -SHAKE_MAG, canvas.width + 2 * SHAKE_MAG, canvas.height + 2 * SHAKE_MAG);
+
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) { const o = grid[y][x]; if (o) { ctx.fillStyle = actorById[o].color.land; ctx.fillRect(x * CELL, y * CELL, CELL, CELL); } }
+
+    ctx.strokeStyle = COLORS.grid; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = 0; x <= COLS; x++) { ctx.moveTo(x * CELL + .5, 0); ctx.lineTo(x * CELL + .5, canvas.height); }
+    for (let y = 0; y <= ROWS; y++) { ctx.moveTo(0, y * CELL + .5); ctx.lineTo(canvas.width, y * CELL + .5); }
+    ctx.stroke();
+
+    for (const a of actors) {
+      if (!a.alive || a.trail.length === 0) continue;
+      ctx.fillStyle = a.color.trail;
+      for (const c of a.trail) ctx.fillRect(c.x * CELL, c.y * CELL, CELL, CELL);
+      ctx.strokeStyle = COLORS.trailEdge; ctx.lineWidth = 2;
+      for (const c of a.trail) ctx.strokeRect(c.x * CELL + 1, c.y * CELL + 1, CELL - 2, CELL - 2);
+    }
+
+    flashes = flashes.filter((f) => now - f.start < FLASH_MS);
+    for (const f of flashes) { const age = now - f.start; if (age < 0) continue; ctx.globalAlpha = 1 - age / FLASH_MS; ctx.fillStyle = COLORS.flash; ctx.fillRect(f.x * CELL, f.y * CELL, CELL, CELL); }
+    ctx.globalAlpha = 1;
+
+    for (const a of actors) {
+      if (!a.alive) continue;
+      const px = a.x * CELL, py = a.y * CELL;
+      ctx.fillStyle = a.color.land; ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
+      ctx.fillStyle = a.color.head; ctx.fillRect(px + CELL * 0.38, py + CELL * 0.38, CELL * 0.24, CELL * 0.24);
+      ctx.lineWidth = 2.5; ctx.strokeStyle = a.isBot ? "#0b0e15" : "#ffffff"; ctx.strokeRect(px + 1.5, py + 1.5, CELL - 3, CELL - 3);
+    }
+
+    ctx.restore();
+
+    if (state === "dying") { ctx.globalAlpha = 0.5 * Math.max(0, 1 - (now - phaseStart) / DEATH_MS); ctx.fillStyle = "#ff2030"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1; }
+    else if (state === "paused") centerText("Paused", "Press Space to resume");
+    else if (state === "countdown") {
+      const e = now - phaseStart;
+      const n = e < COUNT_STEP ? "3" : e < 2 * COUNT_STEP ? "2" : e < 3 * COUNT_STEP ? "1" : "Go!";
+      ctx.fillStyle = "rgba(8,10,16,0.5)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
+      ctx.font = "700 64px system-ui, sans-serif"; ctx.fillText(n, canvas.width / 2, canvas.height / 2);
+      ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+    }
+  }
+  function centerText(title, sub) {
+    ctx.fillStyle = "rgba(8,10,16,0.72)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
+    ctx.font = "700 38px system-ui, sans-serif"; ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 12);
+    ctx.font = "500 16px system-ui, sans-serif"; ctx.fillStyle = "rgba(231,235,243,0.85)"; ctx.fillText(sub, canvas.width / 2, canvas.height / 2 + 26);
+    ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+  }
+
+  // ===========================================================================
+  // STANDINGS
+  // ===========================================================================
+  const hud = document.getElementById("hud");
+  function updateHUD() {
+    const counts = countTerritory(), total = COLS * ROWS;
+    const items = actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
+    let html = "";
+    if (winCond === "timed" && (state === "playing" || state === "paused")) {
+      const left = Math.max(0, TIMED_LIMIT - (performance.now() - playStart)), s = Math.ceil(left / 1000);
+      html += '<span class="chip" style="opacity:.75">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
+    }
+    html += '<span class="chip" style="opacity:.55">' + DIFFS[difficulty].label + "</span>";
+    html += items.map((it) => '<span class="chip"><i style="background:' + it.a.color.land + '"></i>' + (it.a.isBot ? "Bot " + (it.a.id - 1) : "You") + " " + it.pct.toFixed(1) + "%</span>").join("");
+    hud.innerHTML = html;
+  }
+
+  // ===========================================================================
+  // MAIN LOOP
+  // ===========================================================================
+  let last = performance.now(), acc = 0, hudLast = 0;
+  function frame(now) {
+    if (state === "countdown" && now - phaseStart >= COUNTDOWN_TOTAL) { state = "playing"; last = now; acc = 0; playStart = now; lastSpawn = now; }
+    if (state === "playing") {
+      acc += now - last; last = now;
+      if (acc > tickMs * 5) acc = tickMs * 5;
+      while (acc >= tickMs) { step(); if (state !== "playing") break; acc -= tickMs; }
+      if (state === "playing" && winCond === "timed" && now - playStart >= TIMED_LIMIT) {
+        const counts = countTerritory(), lead = leaderName(counts);
+        endGame(lead === "You" ? "Time! You win" : "Time! " + lead + " wins", "Most territory when the clock ran out. Press Start to play again.");
+      }
+      if (state === "playing" && numBots > 0 && now - lastSpawn >= SPAWN_INTERVAL) {
+        let aliveBots = 0; for (const a of actors) if (a.isBot && a.alive) aliveBots++;
+        if (aliveBots < numBots) spawnBot();
+        lastSpawn = now;
+      }
+    } else { last = now; }
+    if (state === "dying" && now - phaseStart >= DEATH_MS) newGame();
+    if (now - hudLast > 200) { updateHUD(); hudLast = now; }
+    draw(now);
+    requestAnimationFrame(frame);
+  }
+
+  buildMenu();
+  applySettings();
+  fitBoard();
+  buildWorld();
+  updateHUD();
+  showMenu("Paper.io", "Set up your game, then press Start");
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
