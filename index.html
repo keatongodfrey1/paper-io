@@ -181,7 +181,7 @@
   </div>
   <div class="hint">
     Arrow keys, <b>WASD</b>, or <b>drag</b> to move &nbsp;·&nbsp; loop back to claim &nbsp;·&nbsp;
-    cut a trail to take that land &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu
+    cut a trail to take that land<span id="hintSolo"> &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu</span><span id="hintOnline" style="display:none"> &nbsp;·&nbsp; tap <b>Leave</b> to exit</span>
   </div>
 
 <script src="sim.js"></script>
@@ -271,7 +271,8 @@
   }
 
   function newGame() {
-    ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block"; pauseBtn.style.display = "block"; pauseBtn.textContent = "Pause";
+    ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block"; menuBtn.textContent = "Menu"; pauseBtn.style.display = "block"; pauseBtn.textContent = "Pause";
+    { const hs = document.getElementById("hintSolo"), ho = document.getElementById("hintOnline"); if (hs) hs.style.display = "inline"; if (ho) ho.style.display = "none"; }
     fitBoard(); makeWorld(); updateHUD();
     state = "countdown"; phaseStart = performance.now();
   }
@@ -333,6 +334,7 @@
     menu.style.display = "flex"; menuBtn.style.display = "none"; pauseBtn.style.display = "none"; document.body.classList.add("menuing"); endDrag();
   }
   function hideMenu() { menu.style.display = "none"; document.body.classList.remove("menuing"); }
+  function showOnlineChrome() { menuBtn.style.display = "block"; menuBtn.textContent = "Leave"; pauseBtn.style.display = "none"; var hs = document.getElementById("hintSolo"), ho = document.getElementById("hintOnline"); if (hs) hs.style.display = "none"; if (ho) ho.style.display = "inline"; }
   function toMenu() { const wasOnline = onlineMode; leaveOnline(); if (wasOnline) makeWorld(); state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
   function togglePause() {
     if (state === "playing") { state = "paused"; pauseBtn.textContent = "Resume"; endDrag(); }
@@ -404,10 +406,10 @@
       const me = world.player ? world.player.id : -1;
       if (ev.victimId === me) { shakeStart = now; playDeathSound(); }
       else if (ev.killerId === me) { shakeStart = now; playClaimSound(); }
-    } else if (ev.type === "prune" || ev.type === "spawn") {
-      for (const c of ev.cells) flashes.push({ x: c.x, y: c.y, start: now });
+    } else if (ev.type === "prune" || ev.type === "spawn" || ev.type === "eliminated") {
+      for (const c of (ev.cells || [])) flashes.push({ x: c.x, y: c.y, start: now });
     }
-    // 'endgame' / 'eliminated' are handled by the main loop via world.ended
+    // 'endgame' is handled by the main loop via world.ended
   }
 
   function leaderName(counts) {
@@ -553,7 +555,7 @@
       renderLobby();
     }
     else if (m.t === "joined") { yourId = m.yourActorId; inRound = true; }
-    else if (m.t === "snapshot") { makeRenderWorld(m); inRound = true; hideLobby(); state = m.state === "playing" ? "playing" : "countdown"; }
+    else if (m.t === "snapshot") { makeRenderWorld(m); inRound = true; hideLobby(); state = m.state === "playing" ? "playing" : "countdown"; showOnlineChrome(); }
     else if (m.t === "tick") applyTick(m);
     else if (m.t === "state") {
       if (!inRound) return;
@@ -567,10 +569,18 @@
     if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, trail: a.trail || [], fx: a.fx, fy: a.fy, prevFx: a.fx, prevFy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
     else { o.alive = a.alive; o.trail = a.trail || []; o.prevFx = o.fx; o.prevFy = o.fy; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
   }
+  function sizeOnlineCanvas() {
+    if (!COLS || !ROWS) return;
+    const hud = document.getElementById("hud"), h1 = document.querySelector("h1"), hint = document.querySelector(".hint");
+    const chromeH = (h1 ? h1.offsetHeight : 28) + Math.max(46, hud ? hud.offsetHeight : 46) + (hint ? hint.offsetHeight : 22) + 22;
+    const availW = Math.max(300, window.innerWidth - 24);
+    const availH = Math.max(240, window.innerHeight - chromeH);
+    CELL = Math.max(4, Math.floor(Math.min(availW / COLS, availH / ROWS)));
+    canvas.width = COLS * CELL; canvas.height = ROWS * CELL;
+  }
   function makeRenderWorld(snap) {
     COLS = snap.cols; ROWS = snap.rows;
-    CELL = Math.max(4, Math.floor(Math.min((Math.max(320, window.innerWidth - 40)) / COLS, (Math.max(320, window.innerHeight - 170)) / ROWS)));
-    canvas.width = COLS * CELL; canvas.height = ROWS * CELL;
+    sizeOnlineCanvas();
     tickMs = snap.tickMs; winCond = snap.winCond; winThreshold = snap.winThreshold; timedLimitMs = snap.timedLimitMs;
     const grid = [];
     for (let y = 0; y < ROWS; y++) { const row = new Array(COLS); for (let x = 0; x < COLS; x++) row[x] = snap.grid[y * COLS + x]; grid.push(row); }
@@ -603,6 +613,7 @@
       const nm = (id) => (id === yourId ? "You" : (world.actorById[id] ? world.actorById[id].name : "Someone"));
       if (r.reason === "target") title = r.winnerId === yourId ? "You win!" : nm(r.winnerId) + " wins";
       else if (r.reason === "timed") title = r.winnerId === yourId ? "Time! You win" : "Time! " + nm(r.winnerId) + " wins";
+      else if (r.reason === "allout") { title = "Everyone's been wiped out"; sub = "The bots win this one. Back to the lobby…"; }
     }
     onlineOver = [title, sub];
   }
@@ -668,6 +679,17 @@
       ctx.fillStyle = a.color.land; ctx.fillRect(cxp - S / 2, cyp - S / 2, S, S);
       ctx.fillStyle = a.color.head; ctx.fillRect(cxp - P / 2, cyp - P / 2, P, P);
       ctx.lineWidth = 2.5; ctx.strokeStyle = a.isBot ? "#0b0e15" : "#ffffff"; ctx.strokeRect(cxp - S / 2, cyp - S / 2, S, S);
+      if (world.online && a === player) {
+        const bob = Math.sin(now / 280) * 2;
+        ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.globalAlpha = 0.9;
+        ctx.beginPath(); ctx.arc(cxp, cyp, S * 0.95, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+        const ty = cyp - S / 2 - 9 + bob;
+        ctx.font = "800 12px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+        const tw = ctx.measureText("YOU").width;
+        ctx.fillStyle = "rgba(0,0,0,0.62)"; ctx.fillRect(cxp - tw / 2 - 5, ty - 11, tw + 10, 15);
+        ctx.fillStyle = "#fff"; ctx.fillText("YOU", cxp, ty);
+        ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+      }
     }
 
     ctx.restore();
@@ -767,6 +789,7 @@
   applySettings();
   fitBoard();
   makeWorld();
+  addEventListener("resize", () => { if (onlineMode && COLS && ROWS) sizeOnlineCanvas(); });
   updateHUD();
   showMenu("Paper.io", "Set up your game, then press Start");
   requestAnimationFrame(frame);

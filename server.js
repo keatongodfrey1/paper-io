@@ -178,8 +178,9 @@ function tick() {
     // per-actor human death → respawn (or eliminate); never freezes the others
     for (const c of room.conns.values()) {
       const a = w.actorById[c.actorId];
-      if (a && a.dead && t >= a.deadUntil) { if (a.lives > 0) w.respawn(a); else { a.dead = false; a.alive = false; } }
+      if (a && a.dead && t >= a.deadUntil) { if (a.lives > 0) w.respawn(a); else w.eliminate(a); }
     }
+    if (!w.ended) w.endIfAllHumansOut();
     // keep bots topped up
     if (!w.ended && t - room.lastSpawn >= w.SPAWN_INTERVAL) {
       let ab = 0; for (const a of w.actors) if (a.isBot && a.alive) ab++;

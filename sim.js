@@ -356,6 +356,28 @@
       w.checkEndgame(taker || victim);
     };
 
+    // Permanently remove an actor and FREE all its land + trail, so it vanishes
+    // like a knocked-out bot. Used when an online human runs out of lives.
+    w.eliminate = function (a) {
+      const COLS = w.COLS, ROWS = w.ROWS, grid = w.grid, cells = [];
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === a.id) { grid[y][x] = EMPTY; cells.push({ x: x, y: y }); }
+      for (const c of a.trail) w.trailOwner.delete(key(c.x, c.y));
+      a.trail = []; a.trailSet.clear(); a.recent = [];
+      a.alive = false; a.dead = false;
+      w.emit({ type: "eliminated", actorId: a.id, cells: cells });
+    };
+
+    // Online: once every human is out of the round, end it (don't let the bots
+    // play on by themselves). Returns true if it ended the round.
+    w.endIfAllHumansOut = function () {
+      if (w.ended || w.mode === "solo") return false;
+      const humans = w.actors.filter(function (a) { return !a.isBot; });
+      if (humans.length === 0 || !humans.every(function (a) { return !a.alive; })) return false;
+      w.ended = true; w.endResult = { reason: "allout", leaderId: w.leaderId() };
+      w.emit({ type: "endgame", reason: "allout", leaderId: w.endResult.leaderId });
+      return true;
+    };
+
     // -------------------------------------------------------------------------
     // ENDGAME
     // -------------------------------------------------------------------------
@@ -389,8 +411,9 @@
         for (const c of a.trail) w.trailOwner.delete(w.key(c.x, c.y));
         a.trail = []; a.trailSet.clear(); a.recent = [];
         if (a.lives > 0) { a.lives--; a.dead = true; a.deadUntil = w.now() + DEATH_MS; w.emit({ type: "death", victimId: a.id, killerId: null, victimIsBot: false, cells: [] }); }
-        else { a.alive = false; w.emit({ type: "eliminated", actorId: a.id }); }
+        else { w.eliminate(a); }
       }
+      if (w.endIfAllHumansOut()) return;
       // Win by reaching the target share of the board.
       if (w.winCond === "target" && (counts[claimer.id] || 0) >= total * w.winThreshold) {
         w.ended = true; w.endResult = { reason: "target", winnerId: claimer.id };
