@@ -138,6 +138,8 @@
   const FLASH_MS = 320, WAVE_MS_PER_CELL = 8;
   const DEATH_MS = 750;
   const SPAWN_INTERVAL = 7000;  // ms between topping bots back up to the chosen count
+  const TURN_RATE = 13;         // rad/sec the player's heading curves toward your input (free-angle steering)
+  const SELF_GRACE = 3;         // trail cells right behind the head that don't kill you on a sharp turn
 
   const DIFFS = {
     easy:    { label: "Easy",    legOut: [2, 5],  legSide: [2, 4], speed: 1 },
@@ -236,7 +238,9 @@
         id: i + 1, isBot: i > 0, color: i === 0 ? PLAYER_COL : botColor(i - 1),
         alive: true, speed: i > 0 ? sp : 1,
         x: homes[i].x, y: homes[i].y, homeCx: homes[i].x, homeCy: homes[i].y,
-        dx: 0, dy: 0, movedX: 0, movedY: 0, prevX: homes[i].x, prevY: homes[i].y, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+        dx: 0, dy: 0, movedX: 0, movedY: 0, prevX: homes[i].x, prevY: homes[i].y,
+        fx: homes[i].x + 0.5, fy: homes[i].y + 0.5, heading: 0, targetHeading: 0, moving: false, recent: [],
+        trail: [], trailSet: new Set(), ai: { mode: "rest" },
       };
       actors.push(a); actorById[a.id] = a; stampHome(a);
     }
@@ -264,7 +268,7 @@
     if (cx < 0) return;   // board too full, skip this round
     const a = {
       id: nextId++, isBot: true, color: botColor(botSpawnCount++), alive: true, speed: DIFFS[difficulty].speed,
-      x: cx, y: cy, homeCx: cx, homeCy: cy, dx: 0, dy: 0, prevX: cx, prevY: cy, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+      x: cx, y: cy, homeCx: cx, homeCy: cy, dx: 0, dy: 0, prevX: cx, prevY: cy, recent: [], trail: [], trailSet: new Set(), ai: { mode: "rest" },
     };
     actors.push(a); actorById[a.id] = a; stampHome(a);
     const now = performance.now();
@@ -284,6 +288,7 @@
       if (own.length) { const s = own[(Math.random() * own.length) | 0]; player.x = s[0]; player.y = s[1]; }
       else { const h = regionHomes(1)[0]; player.homeCx = h.x; player.homeCy = h.y; stampHome(player); player.x = h.x; player.y = h.y; }
     }
+    player.fx = player.x + 0.5; player.fy = player.y + 0.5; player.heading = 0; player.targetHeading = 0; player.moving = false; player.recent = [];
     player.prevX = player.x; player.prevY = player.y;
     state = "playing"; last = performance.now(); acc = 0;
   }
@@ -365,16 +370,15 @@
     const d = DIRS[e.key];
     if (!d) return;
     e.preventDefault();
-    steer(d);
+    steer(Math.atan2(d[1], d[0]));
   }, { passive: false });
 
-  // Turn the player. Ignores a 180-degree reversal of the way we're actually moving,
-  // so a panic input (back arrow or back swipe) can't fling you onto your own trail.
-  // Looping into your trail still kills you.
-  function steer(d) {
+  // Aim the player toward a heading (radians). The head curves toward it at TURN_RATE,
+  // so it can't instantly reverse onto its own trail; looping back into your trail kills you.
+  function steer(angle) {
     ensureAudio();
-    if ((player.movedX || player.movedY) && d[0] === -player.movedX && d[1] === -player.movedY) return;
-    player.dx = d[0]; player.dy = d[1];
+    player.targetHeading = angle;
+    if (!player.moving) { player.moving = true; player.heading = angle; }   // first input snaps heading + starts moving
   }
 
   // Touch / drag steering: press and hold anywhere, then push toward a direction.
@@ -392,7 +396,7 @@
     if (!joyShown) { joy.style.left = dragOrigin.x + "px"; joy.style.top = dragOrigin.y + "px"; joy.style.display = "block"; joyShown = true; }
     const m = Math.hypot(dx, dy), s = Math.min(1, JOY_R / m);
     joyKnob.style.left = (JOY_R + dx * s) + "px"; joyKnob.style.top = (JOY_R + dy * s) + "px";
-    steer(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? [1, 0] : [-1, 0]) : (dy > 0 ? [0, 1] : [0, -1]));
+    steer(Math.atan2(dy, dx));   // free-angle: head curves toward your thumb
   });
   addEventListener("pointerup", endDrag);
   addEventListener("pointercancel", endDrag);
@@ -400,40 +404,73 @@
   // ===========================================================================
   // UPDATE
   // ===========================================================================
-  function step() {
+  function step() {   // bots only; the player moves continuously every frame
     if (state !== "playing") return;
     for (const a of actors) {
-      if (!a.alive) continue;
-      a.prevX = a.x; a.prevY = a.y;   // capture tick-start position so render can glide smoothly
-      const reps = a.isBot ? a.speed : 1;
-      for (let r = 0; r < reps && a.alive; r++) {
-        if (a.isBot) botThink(a);
+      if (!a.alive || !a.isBot) continue;
+      a.prevX = a.x; a.prevY = a.y;   // tick-start position for smooth interpolation
+      for (let r = 0; r < a.speed && a.alive; r++) {
+        botThink(a);
         moveActor(a);
         if (state !== "playing") return;
       }
     }
   }
 
+  // Shared per-cell logic: actor `a` enters grid cell (cx,cy). Returns false if it died.
+  function enterCell(a, cx, cy) {
+    const k = key(cx, cy);
+    const owner = trailOwner.get(k);
+    if (owner !== undefined) {
+      if (owner === a.id) {
+        if (a.recent.indexOf(k) !== -1) return true;   // grace: just-laid trail right behind the head
+        killActor(a, null); return false;              // crossed your own (older) trail
+      }
+      killActor(actorById[owner], a);                   // cut someone else's trail
+      if (state !== "playing") return false;
+    }
+    if (grid[cy][cx] === a.id) { if (a.trail.length > 0) claimFor(a); return state === "playing"; }
+    a.trail.push({ x: cx, y: cy }); a.trailSet.add(k); trailOwner.set(k, a.id);
+    a.recent.push(k); if (a.recent.length > SELF_GRACE) a.recent.shift();
+    return state === "playing";
+  }
+
+  // Bots: grid-step, one cell at a time.
   function moveActor(a) {
     if (a.dx === 0 && a.dy === 0) return;
     const nx = a.x + a.dx, ny = a.y + a.dy;
-    if (!inBounds(nx, ny)) {
-      if (a.isBot) { a.ai.mode = "home"; const h = homeStep(a); a.dx = h[0]; a.dy = h[1]; }
-      else { a.dx = 0; a.dy = 0; }
-      return;
+    if (!inBounds(nx, ny)) { a.ai.mode = "home"; const h = homeStep(a); a.dx = h[0]; a.dy = h[1]; return; }
+    a.x = nx; a.y = ny; a.movedX = a.dx; a.movedY = a.dy;
+    enterCell(a, nx, ny);
+  }
+
+  // Player: free-angle, continuous. Heading curves toward your input; the head
+  // paints its trail onto the grid cell-by-cell as it travels.
+  function movePlayer(dt) {
+    if (!player.moving) return;
+    let dh = player.targetHeading - player.heading;
+    while (dh > Math.PI) dh -= 2 * Math.PI;
+    while (dh < -Math.PI) dh += 2 * Math.PI;
+    const maxTurn = TURN_RATE * dt;
+    player.heading += Math.max(-maxTurn, Math.min(maxTurn, dh));
+    const sp = (1000 / tickMs) * dt;   // cells this frame; matches the grid speed setting
+    const nx = Math.max(0.001, Math.min(COLS - 0.001, player.fx + Math.cos(player.heading) * sp));
+    const ny = Math.max(0.001, Math.min(ROWS - 0.001, player.fy + Math.sin(player.heading) * sp));
+    const segX = nx - player.fx, segY = ny - player.fy;
+    const steps = Math.max(1, Math.ceil(Math.hypot(segX, segY) / 0.34));
+    let curCx = Math.floor(player.fx), curCy = Math.floor(player.fy);
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const cx = Math.floor(player.fx + segX * t), cy = Math.floor(player.fy + segY * t);
+      if (cx === curCx && cy === curCy) continue;
+      if (cx !== curCx && cy !== curCy && inBounds(cx, curCy)) {   // 4-connect across a diagonal corner
+        player.x = cx; player.y = curCy;
+        if (!enterCell(player, cx, curCy)) return;
+      }
+      curCx = cx; curCy = cy;
+      if (inBounds(cx, cy)) { player.x = cx; player.y = cy; if (!enterCell(player, cx, cy)) return; }
     }
-    a.x = nx; a.y = ny;
-    a.movedX = a.dx; a.movedY = a.dy;   // remember the direction we actually moved
-    const k = key(nx, ny);
-    // cut check first, so you can kill an opponent even inside your own land
-    const owner = trailOwner.get(k);
-    if (owner !== undefined) {
-      if (owner === a.id) { killActor(a, null); return; }
-      killActor(actorById[owner], a);
-      if (state !== "playing") return;
-    }
-    if (grid[ny][nx] === a.id) { if (a.trail.length > 0) claimFor(a); return; }
-    a.trail.push({ x: nx, y: ny }); a.trailSet.add(k); trailOwner.set(k, a.id);
+    player.fx = nx; player.fy = ny; player.x = Math.floor(nx); player.y = Math.floor(ny);
   }
 
   // ===========================================================================
@@ -459,7 +496,7 @@
     for (const c of captured) flashes.push({ x: c.x, y: c.y, start: now + (Math.abs(c.x - a.x) + Math.abs(c.y - a.y)) * WAVE_MS_PER_CELL });
     if (!a.isBot) { shakeStart = now; playClaimSound(); }
     if (a.isBot) { a.homeCx = a.x; a.homeCy = a.y; a.ai = { mode: "rest" }; }
-    a.trail = []; a.trailSet.clear();
+    a.trail = []; a.trailSet.clear(); a.recent = [];
     for (const oid of affected) { const o = actorById[oid]; if (o && o.alive) pruneTerritory(o); }
     checkEndgame(a);
   }
@@ -501,7 +538,7 @@
     // Player death = classic full reset.
     if (!victim.isBot) {
       for (const c of victim.trail) trailOwner.delete(key(c.x, c.y));
-      victim.trail = []; victim.trailSet.clear();
+      victim.trail = []; victim.trailSet.clear(); victim.recent = [];
       livesLeft--;
       state = "dying"; phaseStart = performance.now(); shakeStart = phaseStart; playDeathSound();
       return;
@@ -642,11 +679,13 @@
 
     for (const a of actors) {
       if (!a.alive) continue;
-      const ix = a.prevX + (a.x - a.prevX) * alpha, iy = a.prevY + (a.y - a.prevY) * alpha;
-      const px = ix * CELL, py = iy * CELL;
-      ctx.fillStyle = a.color.land; ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
-      ctx.fillStyle = a.color.head; ctx.fillRect(px + CELL * 0.38, py + CELL * 0.38, CELL * 0.24, CELL * 0.24);
-      ctx.lineWidth = 2.5; ctx.strokeStyle = a.isBot ? "#0b0e15" : "#ffffff"; ctx.strokeRect(px + 1.5, py + 1.5, CELL - 3, CELL - 3);
+      let cxp, cyp;   // head center, px
+      if (a === player) { cxp = a.fx * CELL; cyp = a.fy * CELL; }
+      else { cxp = (a.prevX + (a.x - a.prevX) * alpha + 0.5) * CELL; cyp = (a.prevY + (a.y - a.prevY) * alpha + 0.5) * CELL; }
+      const S = CELL - 4, P = CELL * 0.24;
+      ctx.fillStyle = a.color.land; ctx.fillRect(cxp - S / 2, cyp - S / 2, S, S);
+      ctx.fillStyle = a.color.head; ctx.fillRect(cxp - P / 2, cyp - P / 2, P, P);
+      ctx.lineWidth = 2.5; ctx.strokeStyle = a.isBot ? "#0b0e15" : "#ffffff"; ctx.strokeRect(cxp - S / 2, cyp - S / 2, S, S);
     }
 
     ctx.restore();
@@ -705,9 +744,10 @@
   function frame(now) {
     if (state === "countdown" && now - phaseStart >= COUNTDOWN_TOTAL) { state = "playing"; last = now; acc = 0; playStart = now; lastSpawn = now; }
     if (state === "playing") {
-      acc += now - last; last = now;
+      const dtMs = now - last; acc += dtMs; last = now;
       if (acc > tickMs * 5) acc = tickMs * 5;
-      while (acc >= tickMs) { step(); if (state !== "playing") break; acc -= tickMs; }
+      movePlayer(Math.min(0.05, dtMs / 1000));   // free-angle player, continuous every frame
+      while (state === "playing" && acc >= tickMs) { step(); if (state !== "playing") break; acc -= tickMs; }
       if (state === "playing" && winCond === "timed" && now - playStart >= timedLimitMs) {
         const counts = countTerritory(), lead = leaderName(counts);
         endGame(lead === "You" ? "Time! You win" : "Time! " + lead + " wins", "Most territory when the clock ran out. Press Start to play again.");
