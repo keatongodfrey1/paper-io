@@ -12,15 +12,15 @@
     background: var(--bg); color: #e7ebf3;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 10px; user-select: none; -webkit-user-select: none;
+    gap: 10px; user-select: none; -webkit-user-select: none; touch-action: manipulation; overscroll-behavior: none;
   }
   h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .3px; opacity: .9; }
   #wrap { position: relative; }
-  canvas { background: var(--board); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.5); display: block; }
-  #hud { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; min-height: 30px; }
+  canvas { background: var(--board); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.5); display: block; touch-action: none; max-width: 100%; height: auto; }
+  #hud { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; min-height: 30px; max-width: 100%; }
   #hud .meta { display: flex; gap: 10px; align-items: center; }
   #hud .meta-item { font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; opacity: .45; }
-  #hud .lb-wrap { display: flex; gap: 7px; align-items: center; }
+  #hud .lb-wrap { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; justify-content: center; }
   #hud .lb { display: inline-flex; align-items: center; gap: 8px; padding: 4px 13px 4px 5px; border-radius: 999px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.06); }
   #hud .lb-rank { width: 19px; height: 19px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; background: rgba(255,255,255,0.12); color: #aeb6c6; }
   #hud .lb.r1 .lb-rank { background: #ffd54a; color: #1a1400; }
@@ -83,6 +83,17 @@
   #menu button:focus-visible, #menu .pill:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   #menuBtn { position: absolute; top: 8px; left: 8px; display: none; background: rgba(20,24,34,0.85); color: #cdd3df; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; z-index: 5; }
   #menuBtn:hover { background: rgba(40,46,62,0.95); }
+  #pauseBtn { position: absolute; top: 8px; right: 8px; display: none; background: rgba(20,24,34,0.85); color: #cdd3df; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; z-index: 5; }
+  #pauseBtn:hover { background: rgba(40,46,62,0.95); }
+  #joy { position: fixed; width: 84px; height: 84px; margin: -42px 0 0 -42px; border-radius: 50%; background: rgba(255,255,255,0.05); border: 2px solid rgba(255,255,255,0.16); display: none; pointer-events: none; z-index: 6; }
+  #joyKnob { position: absolute; left: 42px; top: 42px; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; background: rgba(255,255,255,0.45); }
+  @media (max-width: 480px) {
+    #menu .panel { padding: 20px 18px 24px; max-width: calc(100vw - 16px); }
+    #menuTitle { font-size: 36px; }
+    #menu .opts { grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; }
+    #menu .pill { padding: 6px 10px; font-size: 12px; }
+    #menu .rlabel { font-size: 10px; }
+  }
 </style>
 </head>
 <body>
@@ -91,6 +102,8 @@
   <div id="wrap">
     <canvas id="game"></canvas>
     <button id="menuBtn">Menu</button>
+    <button id="pauseBtn">Pause</button>
+    <div id="joy"><div id="joyKnob"></div></div>
     <div id="menu">
       <div class="panel">
         <div id="menuTitle">Paper<span class="dot">.io</span></div>
@@ -108,7 +121,7 @@
     </div>
   </div>
   <div class="hint">
-    Arrow keys or <b>WASD</b> to move &nbsp;·&nbsp; loop back to claim &nbsp;·&nbsp;
+    Arrow keys, <b>WASD</b>, or <b>drag</b> to move &nbsp;·&nbsp; loop back to claim &nbsp;·&nbsp;
     cut a trail to take that land &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu
   </div>
 
@@ -275,7 +288,7 @@
   }
 
   function newGame() {
-    ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block";
+    ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block"; pauseBtn.style.display = "block"; pauseBtn.textContent = "Pause";
     fitBoard(); buildWorld(); updateHUD();
     state = "countdown"; phaseStart = performance.now();
   }
@@ -286,6 +299,7 @@
   const menu = document.getElementById("menu");
   const botCountEl = document.getElementById("botCount");
   const menuBtn = document.getElementById("menuBtn");
+  const pauseBtn = document.getElementById("pauseBtn");
   function buildMenu() {
     for (const g in MENU_GROUPS) {
       const box = menu.querySelector('.pills[data-group="' + g + '"]');
@@ -310,6 +324,7 @@
     updateWinStepper();
     document.getElementById("startBtn").onclick = () => newGame();
     menuBtn.onclick = () => toMenu();
+    pauseBtn.onclick = togglePause;
   }
   function refreshSel(g) {
     const box = menu.querySelector('.pills[data-group="' + g + '"]');
@@ -321,10 +336,14 @@
     const t = document.getElementById("menuTitle");
     if (title === "Paper.io") t.innerHTML = 'Paper<span class="dot">.io</span>'; else t.textContent = title;
     document.getElementById("menuSub").textContent = sub;
-    menu.style.display = "flex"; menuBtn.style.display = "none"; document.body.classList.add("menuing");
+    menu.style.display = "flex"; menuBtn.style.display = "none"; pauseBtn.style.display = "none"; document.body.classList.add("menuing"); endDrag();
   }
   function hideMenu() { menu.style.display = "none"; document.body.classList.remove("menuing"); }
   function toMenu() { state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
+  function togglePause() {
+    if (state === "playing") { state = "paused"; pauseBtn.textContent = "Resume"; endDrag(); }
+    else if (state === "paused") { state = "playing"; last = performance.now(); acc = 0; pauseBtn.textContent = "Pause"; }
+  }
 
   // ===========================================================================
   // INPUT
@@ -339,23 +358,43 @@
       return;
     }
     if (e.key === "Escape") { toMenu(); return; }
-    if (e.key === " " || e.key === "p" || e.key === "P") {
-      e.preventDefault();
-      if (state === "playing") state = "paused";
-      else if (state === "paused") { state = "playing"; last = performance.now(); acc = 0; }
-      return;
-    }
+    if (e.key === " " || e.key === "p" || e.key === "P") { e.preventDefault(); togglePause(); return; }
     if (e.key === "r" || e.key === "R") { newGame(); return; }
     if (state !== "playing") return;
     const d = DIRS[e.key];
     if (!d) return;
-    e.preventDefault(); ensureAudio();
-    // ignore a 180-degree reversal of the way we're actually moving, so a panic-press
-    // of the back arrow can't send you straight onto your own trail (looping into your
-    // trail still kills you).
+    e.preventDefault();
+    steer(d);
+  }, { passive: false });
+
+  // Turn the player. Ignores a 180-degree reversal of the way we're actually moving,
+  // so a panic input (back arrow or back swipe) can't fling you onto your own trail.
+  // Looping into your trail still kills you.
+  function steer(d) {
+    ensureAudio();
     if ((player.movedX || player.movedY) && d[0] === -player.movedX && d[1] === -player.movedY) return;
     player.dx = d[0]; player.dy = d[1];
-  }, { passive: false });
+  }
+
+  // Touch / drag steering: press and hold anywhere, then push toward a direction.
+  // The origin stays where you pressed; the player follows the direction of your
+  // thumb from that origin and updates live as you move (no need to lift and re-swipe).
+  const joy = document.getElementById("joy"), joyKnob = document.getElementById("joyKnob");
+  const JOY_DEAD = 14, JOY_R = 42;
+  let dragOrigin = null, joyShown = false;
+  function endDrag() { dragOrigin = null; joyShown = false; joy.style.display = "none"; }
+  addEventListener("pointerdown", (e) => { if (state === "playing") { dragOrigin = { x: e.clientX, y: e.clientY }; joyShown = false; } });
+  addEventListener("pointermove", (e) => {
+    if (!dragOrigin || state !== "playing") return;
+    const dx = e.clientX - dragOrigin.x, dy = e.clientY - dragOrigin.y;
+    if (Math.abs(dx) < JOY_DEAD && Math.abs(dy) < JOY_DEAD) return;   // deadzone near center keeps your current direction
+    if (!joyShown) { joy.style.left = dragOrigin.x + "px"; joy.style.top = dragOrigin.y + "px"; joy.style.display = "block"; joyShown = true; }
+    const m = Math.hypot(dx, dy), s = Math.min(1, JOY_R / m);
+    joyKnob.style.left = (JOY_R + dx * s) + "px"; joyKnob.style.top = (JOY_R + dy * s) + "px";
+    steer(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? [1, 0] : [-1, 0]) : (dy > 0 ? [0, 1] : [0, -1]));
+  });
+  addEventListener("pointerup", endDrag);
+  addEventListener("pointercancel", endDrag);
 
   // ===========================================================================
   // UPDATE
@@ -610,7 +649,7 @@
     ctx.restore();
 
     if (state === "dying") { ctx.globalAlpha = 0.5 * Math.max(0, 1 - (now - phaseStart) / DEATH_MS); ctx.fillStyle = "#ff2030"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1; }
-    else if (state === "paused") centerText("Paused", "Press Space to resume");
+    else if (state === "paused") centerText("Paused", "Tap Resume or press Space");
     else if (state === "countdown") {
       const e = now - phaseStart;
       const n = e < COUNT_STEP ? "3" : e < 2 * COUNT_STEP ? "2" : e < 3 * COUNT_STEP ? "1" : "Go!";
