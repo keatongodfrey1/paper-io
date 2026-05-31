@@ -259,12 +259,14 @@
     const chromeH = (h1 ? h1.offsetHeight : 28) + Math.max(46, hud ? hud.offsetHeight : 46) + (hint ? hint.offsetHeight : 22) + 22;
     return { w: Math.max(300, window.innerWidth - 16), h: Math.max(240, window.innerHeight - chromeH) };
   }
-  // Canvas = the visible viewport; CELL = chunky, comfortable cells. The board is
-  // usually larger than the viewport, so the camera scrolls to follow your head.
+  // Canvas = the visible viewport. Pick a cell size that fits the WHOLE board on
+  // screen when it reasonably can (so you can see every player), but never shrinks
+  // below ~9px — below that the camera scrolls to follow your head instead.
   function applyViewport() {
     const a = availSize();
     canvas.width = a.w; canvas.height = a.h;
-    CELL = Math.max(13, Math.min(24, Math.round(Math.min(a.w, a.h) / 26)));
+    const cols = COLS || 84, rows = ROWS || 52;
+    CELL = Math.max(9, Math.min(20, Math.floor(Math.min(a.w / cols, a.h / rows))));
   }
   function fitBoard() {                       // solo: fixed board dims + scrolling camera
     const d = BOARD_DIMS[settings.board] || BOARD_DIMS.medium;
