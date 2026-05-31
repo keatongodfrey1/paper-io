@@ -48,14 +48,14 @@ const MAX_PLAYERS = 8;
 const SPEED_TICK = { slow: 72, normal: 48, fast: 33 };   // ms per game-speed step
 const CONFIG = {                // defaults; the host can change these in the lobby
   board: "medium",
-  difficulty: "easy",           // gentle bots by default (kid-friendly)
+  difficulty: "normal",         // matches solo's default
   speed: "normal",              // slow | normal | fast (on-screen speed)
-  bots: 4,                      // AI bots added alongside the humans (capped so humans + bots <= MAX_PLAYERS)
+  bots: 3,                      // AI bots added alongside the humans (capped so humans + bots <= MAX_PLAYERS)
   win: "target",                // 'target' | 'timed'
   winPct: 60,                   // target % to win
   winSecs: 120,                 // timed-mode seconds
   lives: 3,
-  countdownMs: 1800,
+  countdownMs: 2800,            // matches solo's 3·2·1·Go! (3*COUNT_STEP + GO_MS)
 };
 const speedTick = () => SPEED_TICK[CONFIG.speed] || 48;
 const SPAWN_CAP_SHARE = 0.8;    // stop dropping in new bots once anyone holds this share
