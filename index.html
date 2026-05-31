@@ -259,14 +259,12 @@
     const chromeH = (h1 ? h1.offsetHeight : 28) + Math.max(46, hud ? hud.offsetHeight : 46) + (hint ? hint.offsetHeight : 22) + 22;
     return { w: Math.max(300, window.innerWidth - 16), h: Math.max(240, window.innerHeight - chromeH) };
   }
-  // Canvas = the visible viewport. Pick a cell size that fits the WHOLE board on
-  // screen when it reasonably can (so you can see every player), but never shrinks
-  // below ~9px — below that the camera scrolls to follow your head instead.
+  // Canvas = the visible viewport; chunky zoomed-in cells with a scrolling camera
+  // (the minimap, drawn separately, gives the whole-board overview).
   function applyViewport() {
     const a = availSize();
     canvas.width = a.w; canvas.height = a.h;
-    const cols = COLS || 84, rows = ROWS || 52;
-    CELL = Math.max(9, Math.min(20, Math.floor(Math.min(a.w / cols, a.h / rows))));
+    CELL = Math.max(14, Math.min(22, Math.round(Math.min(a.w, a.h) / 26)));
   }
   function fitBoard() {                       // solo: fixed board dims + scrolling camera
     const d = BOARD_DIMS[settings.board] || BOARD_DIMS.medium;
@@ -714,6 +712,8 @@
 
     ctx.restore();
 
+    if (state === "playing" || state === "countdown" || state === "paused" || state === "dying") drawMinimap(now);
+
     if (onlineMode) {
       if (reconnecting) centerText("Reconnecting…", "Hang tight — rejoining your game");
       else if (state === "connecting") centerText("Connecting…", "Joining the game on this WiFi");
@@ -738,6 +738,39 @@
     ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
     ctx.font = "700 64px system-ui, sans-serif"; ctx.fillText(n, canvas.width / 2, canvas.height / 2);
     ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+  }
+
+  // Minimap: a corner overview of the whole board so you can see everyone while the
+  // main view stays zoomed in. Territory is cached to an offscreen 1px-per-cell canvas
+  // (re-rendered on a throttle) and blitted scaled; player dots draw live each frame.
+  let miniCv = null, miniCtx = null, miniAt = -1e9;
+  function renderMiniTerritory() {
+    if (!miniCv || miniCv.width !== COLS || miniCv.height !== ROWS) {
+      miniCv = document.createElement("canvas"); miniCv.width = COLS; miniCv.height = ROWS; miniCtx = miniCv.getContext("2d");
+    }
+    miniCtx.fillStyle = COLORS.board; miniCtx.fillRect(0, 0, COLS, ROWS);
+    const grid = world.grid, byId = world.actorById;
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) { const o = grid[y][x]; if (o) { const a = byId[o]; if (a) { miniCtx.fillStyle = a.color.land; miniCtx.fillRect(x, y, 1, 1); } } }
+  }
+  function drawMinimap(now) {
+    if (!world || !COLS || !ROWS) return;
+    if (now - miniAt > 140) { renderMiniTerritory(); miniAt = now; }
+    const pad = 12, mw = Math.max(108, Math.min(168, Math.round(canvas.width * 0.2))), scale = mw / COLS, mh = Math.round(ROWS * scale);
+    const ox = canvas.width - mw - pad, oy = canvas.height - mh - pad;   // bottom-right (clear of the top buttons)
+    ctx.fillStyle = "rgba(8,10,16,0.82)"; ctx.fillRect(ox - 5, oy - 5, mw + 10, mh + 10);
+    ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 1; ctx.strokeRect(ox - 5.5, oy - 5.5, mw + 11, mh + 11);
+    const sm = ctx.imageSmoothingEnabled; ctx.imageSmoothingEnabled = false;
+    if (miniCv) ctx.drawImage(miniCv, ox, oy, mw, mh);
+    ctx.imageSmoothingEnabled = sm;
+    for (const a of world.actors) {
+      if (!a.alive) continue;
+      let px, py;
+      if (world.online || a === world.player) { px = a.fx; py = a.fy; } else { px = a.x + 0.5; py = a.y + 0.5; }
+      const dx = ox + px * scale, dy = oy + py * scale, you = a === world.player;
+      ctx.fillStyle = you ? "#fff" : a.color.head;
+      ctx.beginPath(); ctx.arc(dx, dy, you ? 3 : 2.2, 0, Math.PI * 2); ctx.fill();
+      if (you) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(dx, dy, 4.5, 0, Math.PI * 2); ctx.stroke(); }
+    }
   }
 
   // ===========================================================================
