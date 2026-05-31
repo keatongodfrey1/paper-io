@@ -125,28 +125,25 @@
     cut a trail to take that land &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu
   </div>
 
+<script src="sim.js"></script>
 <script>
 (() => {
   "use strict";
 
+  // The game "brain" (grid, movement, claiming, bots, scoring) lives in sim.js so the
+  // multiplayer server can run the EXACT same logic. This file is the solo ENGINE:
+  // DOM/menu, input, audio, rendering, the animation loop, and turning the sim's
+  // events into flashes/sound/shake. In solo mode it runs one world locally.
+  const PaperSim = window.PaperSim;
+
   // ===========================================================================
-  // CONFIG + SETTINGS
+  // CONFIG (render + UI only; gameplay tuning lives in sim.js)
   // ===========================================================================
-  const START_BLOCK = 5;
+  const DIFFS = PaperSim.DIFFS;
+  const DEATH_MS = PaperSim.DEATH_MS, SPAWN_INTERVAL = PaperSim.SPAWN_INTERVAL;
   const COUNT_STEP = 750, GO_MS = 550, COUNTDOWN_TOTAL = 3 * COUNT_STEP + GO_MS;
   const SHAKE_MS = 240, SHAKE_MAG = 9;
   const FLASH_MS = 320, WAVE_MS_PER_CELL = 8;
-  const DEATH_MS = 750;
-  const SPAWN_INTERVAL = 7000;  // ms between topping bots back up to the chosen count
-  const TURN_RATE = 13;         // rad/sec the player's heading curves toward your input (free-angle steering)
-  const SELF_GRACE = 3;         // trail cells right behind the head that don't kill you on a sharp turn
-
-  const DIFFS = {
-    easy:    { label: "Easy",    legOut: [2, 5],  legSide: [2, 4], speed: 1 },
-    normal:  { label: "Normal",  legOut: [4, 7],  legSide: [3, 6], speed: 2 },
-    hard:    { label: "Hard",    legOut: [5, 9],  legSide: [3, 7], speed: 3 },
-    extreme: { label: "Extreme", legOut: [6, 11], legSide: [4, 8], speed: 4 },
-  };
   const BOARD_CELL = { small: 10, medium: 8, large: 6 };   // finer cells...
   const SPEED_TICK = { slow: 72, normal: 48, fast: 33 };   // ...with a faster tick = same on-screen speed but ~1.5x snappier turns
   const MAX_BOTS = 30;
@@ -159,27 +156,19 @@
   };
   const settings = { difficulty: "normal", board: "small", speed: "normal", win: "target", winPct: 100, winSecs: 120, bots: 3, lives: 1 };
 
-  // resolved each game from settings
-  let difficulty, numBots, CELL, tickMs, winCond, winThreshold, timedLimitMs, livesLeft;
-
-  const PLAYER_COL = { land: "#ff4d6d", trail: "#ff8fa6", head: "#ffd1da" };
-  function botColor(i) { const h = Math.round((i * 137.508 + 25) % 360); return { land: "hsl(" + h + ",66%,56%)", trail: "hsl(" + h + ",82%,72%)", head: "hsl(" + h + ",90%,86%)" }; }
   const COLORS = { board: "#1b2030", grid: "#232a3d", flash: "#ffffff", trailEdge: "rgba(10,12,20,0.9)" };
 
   // ===========================================================================
-  // STATE
+  // ENGINE STATE
   // ===========================================================================
-  const EMPTY = 0, PLAYER_ID = 1;
+  let difficulty, numBots, CELL, tickMs, winCond, winThreshold, timedLimitMs, lives;
   let COLS, ROWS;
-  let grid, trailOwner, actors, actorById, player, flashes, comp;
-  let shakeStart = -1e9;
-  let state = "start";        // start | countdown | playing | paused | dying | over
-  let phaseStart = 0, playStart = 0;
-  let nextId = 0, botSpawnCount = 0, lastSpawn = 0;
+  let world = null;                       // the PaperSim world we're rendering
+  let state = "start";                    // start | countdown | playing | paused | dying | over
+  let phaseStart = 0, playStart = 0, lastSpawn = 0;
   let overTitle = "", overSub = "";
-
-  const key = (x, y) => x + "," + y;
-  const inBounds = (x, y) => x >= 0 && x < COLS && y >= 0 && y < ROWS;
+  let shakeStart = -1e9;
+  let flashes = [];                       // render-only; fed by sim events
 
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -192,7 +181,7 @@
     winCond = settings.win;                  // 'target' | 'timed'
     winThreshold = settings.winPct / 100;
     timedLimitMs = settings.winSecs * 1000;
-    livesLeft = settings.lives;
+    lives = settings.lives;
   }
 
   function fitBoard() {
@@ -202,100 +191,20 @@
     ROWS = Math.max(20, Math.min(120, Math.floor(availH / CELL)));
     canvas.width = COLS * CELL;
     canvas.height = ROWS * CELL;
-    comp = new Int16Array(COLS * ROWS);
   }
 
-  // ===========================================================================
-  // WORLD SETUP (region-based starts so nobody clumps)
-  // ===========================================================================
-  function regionHomes(n) {
-    const pad = ((START_BLOCK / 2) | 0) + 2;
-    const gx = Math.ceil(Math.sqrt(n)), gy = Math.ceil(n / gx);
-    const regions = [];
-    for (let ry = 0; ry < gy; ry++) for (let rx = 0; rx < gx; rx++) regions.push({ rx, ry });
-    for (let i = regions.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [regions[i], regions[j]] = [regions[j], regions[i]]; }
-    const cellW = (COLS - 2 * pad) / gx, cellH = (ROWS - 2 * pad) / gy;
-    const homes = [];
-    for (let i = 0; i < n; i++) {
-      const { rx, ry } = regions[i];
-      const x = Math.round(pad + rx * cellW + cellW * (0.25 + 0.5 * Math.random()));
-      const y = Math.round(pad + ry * cellH + cellH * (0.25 + 0.5 * Math.random()));
-      homes.push({ x: Math.max(pad, Math.min(COLS - 1 - pad, x)), y: Math.max(pad, Math.min(ROWS - 1 - pad, y)) });
-    }
-    return homes;
-  }
-
-  function buildWorld() {
-    grid = Array.from({ length: ROWS }, () => new Array(COLS).fill(EMPTY));
-    trailOwner = new Map();
+  function makeWorld() {
+    world = PaperSim.createWorld(
+      { COLS, ROWS, difficulty, numBots, humanCount: 1, winCond, winThreshold, timedLimitMs, lives, mode: "solo" },
+      { now: () => performance.now(), rng: Math.random }
+    );
+    world.buildWorld();
     flashes = [];
-    actors = []; actorById = {};
-    const total = 1 + numBots;
-    const homes = regionHomes(total);
-    const sp = DIFFS[difficulty].speed;
-    for (let i = 0; i < total; i++) {
-      const a = {
-        id: i + 1, isBot: i > 0, color: i === 0 ? PLAYER_COL : botColor(i - 1),
-        alive: true, speed: i > 0 ? sp : 1,
-        x: homes[i].x, y: homes[i].y, homeCx: homes[i].x, homeCy: homes[i].y,
-        dx: 0, dy: 0, movedX: 0, movedY: 0, prevX: homes[i].x, prevY: homes[i].y,
-        fx: homes[i].x + 0.5, fy: homes[i].y + 0.5, heading: 0, targetHeading: 0, moving: false, recent: [],
-        trail: [], trailSet: new Set(), ai: { mode: "rest" },
-      };
-      actors.push(a); actorById[a.id] = a; stampHome(a);
-    }
-    player = actorById[PLAYER_ID];
-    nextId = total + 1; botSpawnCount = numBots;
-  }
-
-  function stampHome(a) {
-    const r = (START_BLOCK / 2) | 0;
-    for (let y = a.homeCy - r; y <= a.homeCy + r; y++)
-      for (let x = a.homeCx - r; x <= a.homeCx + r; x++)
-        if (inBounds(x, y)) grid[y][x] = a.id;
-  }
-
-  // A fresh bot drops in on an open patch with a normal-sized home.
-  function spawnBot() {
-    const r = (START_BLOCK / 2) | 0, pad = r + 1;
-    let cx = -1, cy = -1;
-    for (let t = 0; t < 60 && cx < 0; t++) {
-      const x = pad + ((Math.random() * (COLS - 2 * pad)) | 0), y = pad + ((Math.random() * (ROWS - 2 * pad)) | 0);
-      let ok = true;
-      for (let yy = y - r; yy <= y + r && ok; yy++) for (let xx = x - r; xx <= x + r; xx++) if (!inBounds(xx, yy) || grid[yy][xx] !== EMPTY) { ok = false; break; }
-      if (ok) { cx = x; cy = y; }
-    }
-    if (cx < 0) return;   // board too full, skip this round
-    const a = {
-      id: nextId++, isBot: true, color: botColor(botSpawnCount++), alive: true, speed: DIFFS[difficulty].speed,
-      x: cx, y: cy, homeCx: cx, homeCy: cy, dx: 0, dy: 0, prevX: cx, prevY: cy, recent: [], trail: [], trailSet: new Set(), ai: { mode: "rest" },
-    };
-    actors.push(a); actorById[a.id] = a; stampHome(a);
-    const now = performance.now();
-    for (let yy = cy - r; yy <= cy + r; yy++) for (let xx = cx - r; xx <= cx + r; xx++) if (inBounds(xx, yy)) flashes.push({ x: xx, y: yy, start: now });
-  }
-
-  // Lost a life but lives remain: keep your territory, drop back on a safe owned
-  // cell, clear the spent trail, and resume the SAME game (bots and scores intact).
-  function respawnPlayer() {
-    player.trail = []; player.trailSet.clear();
-    player.dx = 0; player.dy = 0; player.movedX = 0; player.movedY = 0;
-    if (inBounds(player.homeCx, player.homeCy) && grid[player.homeCy][player.homeCx] === PLAYER_ID) {
-      player.x = player.homeCx; player.y = player.homeCy;
-    } else {
-      const own = [];
-      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === PLAYER_ID) own.push([x, y]);
-      if (own.length) { const s = own[(Math.random() * own.length) | 0]; player.x = s[0]; player.y = s[1]; }
-      else { const h = regionHomes(1)[0]; player.homeCx = h.x; player.homeCy = h.y; stampHome(player); player.x = h.x; player.y = h.y; }
-    }
-    player.fx = player.x + 0.5; player.fy = player.y + 0.5; player.heading = 0; player.targetHeading = 0; player.moving = false; player.recent = [];
-    player.prevX = player.x; player.prevY = player.y;
-    state = "playing"; last = performance.now(); acc = 0;
   }
 
   function newGame() {
     ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block"; pauseBtn.style.display = "block"; pauseBtn.textContent = "Pause";
-    fitBoard(); buildWorld(); updateHUD();
+    fitBoard(); makeWorld(); updateHUD();
     state = "countdown"; phaseStart = performance.now();
   }
 
@@ -352,7 +261,7 @@
   }
 
   // ===========================================================================
-  // INPUT
+  // INPUT  (the only gameplay input is a heading angle → world.steer)
   // ===========================================================================
   const DIRS = {
     ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
@@ -373,17 +282,12 @@
     steer(Math.atan2(d[1], d[0]));
   }, { passive: false });
 
-  // Aim the player toward a heading (radians). The head curves toward it at TURN_RATE,
-  // so it can't instantly reverse onto its own trail; looping back into your trail kills you.
   function steer(angle) {
     ensureAudio();
-    player.targetHeading = angle;
-    if (!player.moving) { player.moving = true; player.heading = angle; }   // first input snaps heading + starts moving
+    if (world && world.player) world.steer(world.player, angle);
   }
 
   // Touch / drag steering: press and hold anywhere, then push toward a direction.
-  // The origin stays where you pressed; the player follows the direction of your
-  // thumb from that origin and updates live as you move (no need to lift and re-swipe).
   const joy = document.getElementById("joy"), joyKnob = document.getElementById("joyKnob");
   const JOY_DEAD = 14, JOY_R = 42;
   let dragOrigin = null, joyShown = false;
@@ -402,231 +306,42 @@
   addEventListener("pointercancel", endDrag);
 
   // ===========================================================================
-  // UPDATE
+  // JUICE — turn the sim's events into flashes / sound / shake
   // ===========================================================================
-  function step() {   // bots only; the player moves continuously every frame
-    if (state !== "playing") return;
-    for (const a of actors) {
-      if (!a.alive || !a.isBot) continue;
-      a.prevX = a.x; a.prevY = a.y;   // tick-start position for smooth interpolation
-      for (let r = 0; r < a.speed && a.alive; r++) {
-        botThink(a);
-        moveActor(a);
-        if (state !== "playing") return;
-      }
+  function applyJuice(ev, now) {
+    if (ev.type === "claim") {
+      for (const c of ev.cells) flashes.push({ x: c.x, y: c.y, start: now + (Math.abs(c.x - ev.headX) + Math.abs(c.y - ev.headY)) * WAVE_MS_PER_CELL });
+      if (!ev.isBot) { shakeStart = now; playClaimSound(); }
+    } else if (ev.type === "death") {
+      for (const c of ev.cells) flashes.push({ x: c.x, y: c.y, start: now });
+      const me = world.player ? world.player.id : -1;
+      if (ev.victimId === me) { shakeStart = now; playDeathSound(); }
+      else if (ev.killerId === me) { shakeStart = now; playClaimSound(); }
+    } else if (ev.type === "prune" || ev.type === "spawn") {
+      for (const c of ev.cells) flashes.push({ x: c.x, y: c.y, start: now });
     }
+    // 'endgame' / 'eliminated' are handled by the main loop via world.ended
   }
 
-  // Shared per-cell logic: actor `a` enters grid cell (cx,cy). Returns false if it died.
-  function enterCell(a, cx, cy) {
-    const k = key(cx, cy);
-    const owner = trailOwner.get(k);
-    if (owner !== undefined) {
-      if (owner === a.id) {
-        if (a.recent.indexOf(k) !== -1) return true;   // grace: just-laid trail right behind the head
-        killActor(a, null); return false;              // crossed your own (older) trail
-      }
-      killActor(actorById[owner], a);                   // cut someone else's trail
-      if (state !== "playing") return false;
-    }
-    if (grid[cy][cx] === a.id) { if (a.trail.length > 0) claimFor(a); return state === "playing"; }
-    a.trail.push({ x: cx, y: cy }); a.trailSet.add(k); trailOwner.set(k, a.id);
-    a.recent.push(k); if (a.recent.length > SELF_GRACE) a.recent.shift();
-    return state === "playing";
-  }
-
-  // Bots: grid-step, one cell at a time.
-  function moveActor(a) {
-    if (a.dx === 0 && a.dy === 0) return;
-    const nx = a.x + a.dx, ny = a.y + a.dy;
-    if (!inBounds(nx, ny)) { a.ai.mode = "home"; const h = homeStep(a); a.dx = h[0]; a.dy = h[1]; return; }
-    a.x = nx; a.y = ny; a.movedX = a.dx; a.movedY = a.dy;
-    enterCell(a, nx, ny);
-  }
-
-  // Player: free-angle, continuous. Heading curves toward your input; the head
-  // paints its trail onto the grid cell-by-cell as it travels.
-  function movePlayer(dt) {
-    if (!player.moving) return;
-    let dh = player.targetHeading - player.heading;
-    while (dh > Math.PI) dh -= 2 * Math.PI;
-    while (dh < -Math.PI) dh += 2 * Math.PI;
-    const maxTurn = TURN_RATE * dt;
-    player.heading += Math.max(-maxTurn, Math.min(maxTurn, dh));
-    const sp = (1000 / tickMs) * dt;   // cells this frame; matches the grid speed setting
-    const nx = Math.max(0.001, Math.min(COLS - 0.001, player.fx + Math.cos(player.heading) * sp));
-    const ny = Math.max(0.001, Math.min(ROWS - 0.001, player.fy + Math.sin(player.heading) * sp));
-    const segX = nx - player.fx, segY = ny - player.fy;
-    const steps = Math.max(1, Math.ceil(Math.hypot(segX, segY) / 0.34));
-    let curCx = Math.floor(player.fx), curCy = Math.floor(player.fy);
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const cx = Math.floor(player.fx + segX * t), cy = Math.floor(player.fy + segY * t);
-      if (cx === curCx && cy === curCy) continue;
-      if (cx !== curCx && cy !== curCy && inBounds(cx, curCy)) {   // 4-connect across a diagonal corner
-        player.x = cx; player.y = curCy;
-        if (!enterCell(player, cx, curCy)) return;
-      }
-      curCx = cx; curCy = cy;
-      if (inBounds(cx, cy)) { player.x = cx; player.y = cy; if (!enterCell(player, cx, cy)) return; }
-    }
-    player.fx = nx; player.fy = ny; player.x = Math.floor(nx); player.y = Math.floor(ny);
-  }
-
-  // ===========================================================================
-  // CLAIM + STEAL
-  // ===========================================================================
-  function claimFor(a) {
-    for (const c of a.trail) { grid[c.y][c.x] = a.id; trailOwner.delete(key(c.x, c.y)); }
-    const outside = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
-    const stack = [];
-    for (let x = 0; x < COLS; x++) { fl(x, 0, a, outside, stack); fl(x, ROWS - 1, a, outside, stack); }
-    for (let y = 0; y < ROWS; y++) { fl(0, y, a, outside, stack); fl(COLS - 1, y, a, outside, stack); }
-    while (stack.length) {
-      const [x, y] = stack.pop();
-      fl(x + 1, y, a, outside, stack); fl(x - 1, y, a, outside, stack);
-      fl(x, y + 1, a, outside, stack); fl(x, y - 1, a, outside, stack);
-    }
-    const captured = a.trail.slice();
-    const affected = new Set();
-    for (let y = 0; y < ROWS; y++)
-      for (let x = 0; x < COLS; x++)
-        if (grid[y][x] !== a.id && !outside[y][x]) { const prev = grid[y][x]; if (prev !== EMPTY) affected.add(prev); grid[y][x] = a.id; captured.push({ x, y }); }
-    const now = performance.now();
-    for (const c of captured) flashes.push({ x: c.x, y: c.y, start: now + (Math.abs(c.x - a.x) + Math.abs(c.y - a.y)) * WAVE_MS_PER_CELL });
-    if (!a.isBot) { shakeStart = now; playClaimSound(); }
-    if (a.isBot) { a.homeCx = a.x; a.homeCy = a.y; a.ai = { mode: "rest" }; }
-    a.trail = []; a.trailSet.clear(); a.recent = [];
-    for (const oid of affected) { const o = actorById[oid]; if (o && o.alive) pruneTerritory(o); }
-    checkEndgame(a);
-  }
-  function fl(x, y, a, outside, stack) {
-    if (!inBounds(x, y) || outside[y][x] || grid[y][x] === a.id) return;
-    outside[y][x] = true; stack.push([x, y]);
-  }
-
-  // Keep only ONE connected blob of an actor's land (under its head, or the largest).
-  function pruneTerritory(a) {
-    const id = a.id;
-    comp.fill(-1);
-    const sizes = []; let nc = 0;
-    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
-      if (grid[y][x] !== id || comp[y * COLS + x] !== -1) continue;
-      let sz = 0; const st = [x + y * COLS]; comp[y * COLS + x] = nc;
-      while (st.length) {
-        const idx = st.pop(); sz++;
-        const cx = idx % COLS, cy = (idx / COLS) | 0;
-        if (cx + 1 < COLS && grid[cy][cx + 1] === id && comp[idx + 1] === -1) { comp[idx + 1] = nc; st.push(idx + 1); }
-        if (cx - 1 >= 0 && grid[cy][cx - 1] === id && comp[idx - 1] === -1) { comp[idx - 1] = nc; st.push(idx - 1); }
-        if (cy + 1 < ROWS && grid[cy + 1][cx] === id && comp[idx + COLS] === -1) { comp[idx + COLS] = nc; st.push(idx + COLS); }
-        if (cy - 1 >= 0 && grid[cy - 1][cx] === id && comp[idx - COLS] === -1) { comp[idx - COLS] = nc; st.push(idx - COLS); }
-      }
-      sizes.push(sz); nc++;
-    }
-    if (nc <= 1) return;
-    let keep;
-    if (grid[a.y][a.x] === id) keep = comp[a.y * COLS + a.x];
-    else { keep = 0; for (let i = 1; i < nc; i++) if (sizes[i] > sizes[keep]) keep = i; }
-    const now = performance.now();
-    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === id && comp[y * COLS + x] !== keep) { grid[y][x] = EMPTY; flashes.push({ x, y, start: now }); }
-  }
-
-  // ===========================================================================
-  // DEATH / ABSORB
-  // ===========================================================================
-  function killActor(victim, killer) {
-    // Player death = classic full reset.
-    if (!victim.isBot) {
-      for (const c of victim.trail) trailOwner.delete(key(c.x, c.y));
-      victim.trail = []; victim.trailSet.clear(); victim.recent = [];
-      livesLeft--;
-      state = "dying"; phaseStart = performance.now(); shakeStart = phaseStart; playDeathSound();
-      return;
-    }
-    const now = performance.now();
-    const taker = (killer && killer.alive && killer !== victim) ? killer : null;
-    const takeId = taker ? taker.id : EMPTY;
-
-    // The victim's whole trail SOLIDIFIES into the taker's land: a bridge from the
-    // cut point out to the victim's territory (freed to empty on a self-cut).
-    for (const c of victim.trail) { grid[c.y][c.x] = takeId; trailOwner.delete(key(c.x, c.y)); flashes.push({ x: c.x, y: c.y, start: now }); }
-    victim.trail = []; victim.trailSet.clear();
-
-    // The taker's own trail solidifies too, finishing the bridge back to its land,
-    // so the absorbed territory stays connected and survives the prune.
-    if (taker) {
-      for (const c of taker.trail) { grid[c.y][c.x] = taker.id; trailOwner.delete(key(c.x, c.y)); flashes.push({ x: c.x, y: c.y, start: now }); }
-      taker.trail = []; taker.trailSet.clear();
-    }
-
-    // Absorb (or free) the victim's territory.
-    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === victim.id) { grid[y][x] = takeId; flashes.push({ x, y, start: now }); }
-    victim.alive = false;
-
-    if (taker) { pruneTerritory(taker); if (!taker.isBot) { shakeStart = now; playClaimSound(); } }
-    checkEndgame(taker || victim);
-  }
-
-  // ===========================================================================
-  // ENDGAME
-  // ===========================================================================
-  function countTerritory() {
-    const c = {};
-    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) { const o = grid[y][x]; if (o) c[o] = (c[o] || 0) + 1; }
-    return c;
-  }
   function leaderName(counts) {
-    let bid = 0, bc = -1;
-    for (const a of actors) { const n = counts[a.id] || 0; if (n > bc) { bc = n; bid = a.id; } }
-    return bid === PLAYER_ID ? "You" : "Bot " + (bid - 1);
+    const id = world.leaderId(counts);
+    return world.player && id === world.player.id ? "You" : "Bot " + (id - 1);
   }
-  function checkEndgame(claimer) {
-    const counts = countTerritory(), total = COLS * ROWS;
-    if ((counts[PLAYER_ID] || 0) === 0 && player.alive) { player.alive = false; endGame("Wiped out", "A bot took all your land. " + leaderName(counts) + " leads. Press Start to play again."); return; }
-    for (const a of actors) if (a.isBot && a.alive && (counts[a.id] || 0) === 0) a.alive = false;
-    if (winCond === "target" && (counts[claimer.id] || 0) >= total * winThreshold)
-      endGame(claimer.id === PLAYER_ID ? "You win!" : "Bot " + (claimer.id - 1) + " wins",
-              (winThreshold < 1 ? "First past " + Math.round(winThreshold * 100) + "%. " : "Claimed the whole board. ") + "Press Start to play again.");
+  function finishGame() {
+    const r = world.endResult || { reason: "target", winnerId: world.player.id };
+    const me = world.player ? world.player.id : -1;
+    if (r.reason === "wiped") {
+      endGame("Wiped out", "A bot took all your land. " + leaderName() + " leads. Press Start to play again.");
+    } else if (r.reason === "timed") {
+      const youWin = r.winnerId === me;
+      endGame(youWin ? "Time! You win" : "Time! " + leaderName() + " wins", "Most territory when the clock ran out. Press Start to play again.");
+    } else {
+      const youWin = r.winnerId === me;
+      endGame(youWin ? "You win!" : "Bot " + (r.winnerId - 1) + " wins",
+        (winThreshold < 1 ? "First past " + Math.round(winThreshold * 100) + "%. " : "Claimed the whole board. ") + "Press Start to play again.");
+    }
   }
   function endGame(title, sub) { state = "over"; overTitle = title; overSub = sub; showMenu(title, sub); }
-
-  // ===========================================================================
-  // BOT AI
-  // ===========================================================================
-  function botThink(a) {
-    if (a.ai.mode === "home" && grid[a.y][a.x] === a.id) a.ai = { mode: "rest" };
-    let ai = a.ai;
-    if (ai.mode === "rest") { a.ai = planExcursion(a); ai = a.ai; }
-    if (ai.mode === "out") {
-      if (ai.stepsLeft > 0 && inBounds(a.x + ai.outDir[0], a.y + ai.outDir[1])) { a.dx = ai.outDir[0]; a.dy = ai.outDir[1]; ai.stepsLeft--; return; }
-      ai.mode = "across"; ai.stepsLeft = ai.legSide;
-    }
-    if (ai.mode === "across") {
-      if (ai.stepsLeft > 0 && inBounds(a.x + ai.sideDir[0], a.y + ai.sideDir[1])) { a.dx = ai.sideDir[0]; a.dy = ai.sideDir[1]; ai.stepsLeft--; return; }
-      ai.mode = "home";
-    }
-    const h = homeStep(a); a.dx = h[0]; a.dy = h[1];
-  }
-  function planExcursion(a) {
-    const D = DIFFS[difficulty];
-    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    for (let i = dirs.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [dirs[i], dirs[j]] = [dirs[j], dirs[i]]; }
-    let outDir = dirs[0];
-    for (const d of dirs) if (roomAhead(a, d, 8) >= 4) { outDir = d; break; }
-    const perps = outDir[0] !== 0 ? [[0, 1], [0, -1]] : [[1, 0], [-1, 0]];
-    const sideDir = perps[Math.random() < 0.5 ? 0 : 1];
-    const rng = (lo, hi) => lo + ((Math.random() * (hi - lo + 1)) | 0);
-    return { mode: "out", outDir, sideDir, legSide: rng(D.legSide[0], D.legSide[1]), stepsLeft: rng(D.legOut[0], D.legOut[1]) };
-  }
-  function roomAhead(a, d, max) { let n = 0, x = a.x, y = a.y; for (let i = 0; i < (max || 7); i++) { x += d[0]; y += d[1]; if (!inBounds(x, y)) break; n++; } return n; }
-  function homeStep(a) {
-    const tx = a.homeCx, ty = a.homeCy, cand = [];
-    if (Math.abs(tx - a.x) >= Math.abs(ty - a.y)) { if (tx !== a.x) cand.push([Math.sign(tx - a.x), 0]); if (ty !== a.y) cand.push([0, Math.sign(ty - a.y)]); }
-    else { if (ty !== a.y) cand.push([0, Math.sign(ty - a.y)]); if (tx !== a.x) cand.push([Math.sign(tx - a.x), 0]); }
-    cand.push([1, 0], [-1, 0], [0, 1], [0, -1]);
-    for (const [dx, dy] of cand) { const nx = a.x + dx, ny = a.y + dy; if (!inBounds(nx, ny) || a.trailSet.has(key(nx, ny))) continue; return [dx, dy]; }
-    return [a.dx || 1, a.dy || 0];
-  }
 
   // ===========================================================================
   // SOUND
@@ -651,6 +366,7 @@
   // RENDER
   // ===========================================================================
   function draw(now, alpha) {
+    const grid = world.grid, actors = world.actors, actorById = world.actorById, player = world.player;
     ctx.save();
     const sAge = now - shakeStart;
     if (sAge < SHAKE_MS) { const k = (1 - sAge / SHAKE_MS) * SHAKE_MAG; ctx.translate((Math.random() * 2 - 1) * k, (Math.random() * 2 - 1) * k); }
@@ -714,24 +430,25 @@
   // ===========================================================================
   const hud = document.getElementById("hud");
   function updateHUD() {
-    const counts = countTerritory(), total = COLS * ROWS;
-    const ranked = actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
+    const counts = world.countTerritory(), total = COLS * ROWS, me = world.player ? world.player.id : -1;
+    const ranked = world.actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
     const board = ranked.slice(0, 3);
-    const meIdx = ranked.findIndex((r) => r.a.id === PLAYER_ID);
+    const meIdx = ranked.findIndex((r) => r.a.id === me);
     if (meIdx >= 3) board.push(ranked[meIdx]);   // keep your own standing on the board if you've dropped out of the top 3
 
     let meta = '<span class="meta-item">' + DIFFS[difficulty].label + "</span>";
+    const livesLeft = world.player ? world.player.lives : lives;
     if ((state === "playing" || state === "paused" || state === "dying") && livesLeft != null) meta += '<span class="meta-item">Lives ' + Math.max(0, livesLeft) + "</span>";
     if (winCond === "timed" && (state === "playing" || state === "paused")) {
       const left = Math.max(0, timedLimitMs - (performance.now() - playStart)), s = Math.ceil(left / 1000);
       meta += '<span class="meta-item">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
     }
     const lb = board.map((r) => {
-      const rank = ranked.indexOf(r) + 1, me = r.a.id === PLAYER_ID;
-      return '<div class="lb' + (me ? " me" : "") + (rank <= 3 ? " r" + rank : "") + '">' +
+      const rank = ranked.indexOf(r) + 1, isMe = r.a.id === me;
+      return '<div class="lb' + (isMe ? " me" : "") + (rank <= 3 ? " r" + rank : "") + '">' +
         '<span class="lb-rank">' + rank + "</span>" +
         '<span class="lb-dot" style="background:' + r.a.color.land + '"></span>' +
-        '<span class="lb-name">' + (me ? "You" : "Bot " + (r.a.id - 1)) + "</span>" +
+        '<span class="lb-name">' + (isMe ? "You" : "Bot " + (r.a.id - 1)) + "</span>" +
         '<span class="lb-pct">' + r.pct.toFixed(1) + "%</span></div>";
     }).join("");
     hud.innerHTML = '<span class="meta">' + meta + '</span><span class="lb-wrap">' + lb + "</span>";
@@ -746,20 +463,20 @@
     if (state === "playing") {
       const dtMs = now - last; acc += dtMs; last = now;
       if (acc > tickMs * 5) acc = tickMs * 5;
-      movePlayer(Math.min(0.05, dtMs / 1000));   // free-angle player, continuous every frame
-      while (state === "playing" && acc >= tickMs) { step(); if (state !== "playing") break; acc -= tickMs; }
-      if (state === "playing" && winCond === "timed" && now - playStart >= timedLimitMs) {
-        const counts = countTerritory(), lead = leaderName(counts);
-        endGame(lead === "You" ? "Time! You win" : "Time! " + lead + " wins", "Most territory when the clock ran out. Press Start to play again.");
-      }
-      if (state === "playing" && numBots > 0 && now - lastSpawn >= SPAWN_INTERVAL) {
-        let aliveBots = 0; for (const a of actors) if (a.isBot && a.alive) aliveBots++;
-        if (aliveBots < numBots) spawnBot();
+      world.moveContinuous(world.player, Math.min(0.05, dtMs / 1000), tickMs);   // free-angle player, every frame
+      while (!world.ended && acc >= tickMs) { world.stepBots(); acc -= tickMs; }
+      if (!world.ended && winCond === "timed" && now - playStart >= timedLimitMs) world.finishTimed();
+      if (!world.ended && numBots > 0 && now - lastSpawn >= SPAWN_INTERVAL) {
+        let aliveBots = 0; for (const a of world.actors) if (a.isBot && a.alive) aliveBots++;
+        if (aliveBots < numBots) world.spawnBot();
         lastSpawn = now;
       }
+      for (const ev of world.drainEvents()) applyJuice(ev, now);
+      if (world.ended) finishGame();
+      else if (world.player.dead && state === "playing") { state = "dying"; phaseStart = now; }
     } else { last = now; }
     if (state === "dying" && now - phaseStart >= DEATH_MS) {
-      if (livesLeft > 0) respawnPlayer();
+      if (world.player.lives > 0) { world.respawn(world.player); state = "playing"; last = performance.now(); acc = 0; }
       else endGame("Game over", "Out of lives. Press Start to play again.");
     }
     if (now - hudLast > 200) { updateHUD(); hudLast = now; }
@@ -770,7 +487,7 @@
   buildMenu();
   applySettings();
   fitBoard();
-  buildWorld();
+  makeWorld();
   updateHUD();
   showMenu("Paper.io", "Set up your game, then press Start");
   requestAnimationFrame(frame);

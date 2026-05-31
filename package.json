@@ -1,0 +1,14 @@
+{
+  "name": "paper-io-clone",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Paper.io-style family game: offline solo (index.html) + a tiny LAN multiplayer server (server.js).",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
