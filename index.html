@@ -17,9 +17,20 @@
   h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .3px; opacity: .9; }
   #wrap { position: relative; }
   canvas { background: var(--board); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.5); display: block; }
-  #hud { display: flex; gap: 14px; font-size: 13px; opacity: .92; flex-wrap: wrap; justify-content: center; min-height: 14px; }
-  #hud .chip { display: inline-flex; align-items: center; gap: 6px; }
-  #hud i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  #hud { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; min-height: 30px; }
+  #hud .meta { display: flex; gap: 10px; align-items: center; }
+  #hud .meta-item { font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; opacity: .45; }
+  #hud .lb-wrap { display: flex; gap: 7px; align-items: center; }
+  #hud .lb { display: inline-flex; align-items: center; gap: 8px; padding: 4px 13px 4px 5px; border-radius: 999px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.06); }
+  #hud .lb-rank { width: 19px; height: 19px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; background: rgba(255,255,255,0.12); color: #aeb6c6; }
+  #hud .lb.r1 .lb-rank { background: #ffd54a; color: #1a1400; }
+  #hud .lb.r2 .lb-rank { background: #d2d9e3; color: #181b22; }
+  #hud .lb.r3 .lb-rank { background: #e0935a; color: #1a0e04; }
+  #hud .lb-dot { width: 10px; height: 10px; border-radius: 3px; }
+  #hud .lb-name { font-weight: 700; font-size: 13px; color: #e7ebf3; }
+  #hud .lb-pct { font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; }
+  #hud .lb.me { background: rgba(255,77,109,0.18); border-color: rgba(255,77,109,0.55); }
+  #hud .lb.me .lb-name { color: #ff9bb0; }
   .hint { font-size: 12px; opacity: .5; text-align: center; }
   .hint b { color: var(--accent); opacity: .95; }
 
@@ -623,16 +634,26 @@
   const hud = document.getElementById("hud");
   function updateHUD() {
     const counts = countTerritory(), total = COLS * ROWS;
-    const items = actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
-    let html = "";
+    const ranked = actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
+    const board = ranked.slice(0, 3);
+    const meIdx = ranked.findIndex((r) => r.a.id === PLAYER_ID);
+    if (meIdx >= 3) board.push(ranked[meIdx]);   // keep your own standing on the board if you've dropped out of the top 3
+
+    let meta = '<span class="meta-item">' + DIFFS[difficulty].label + "</span>";
+    if ((state === "playing" || state === "paused" || state === "dying") && livesLeft != null) meta += '<span class="meta-item">Lives ' + Math.max(0, livesLeft) + "</span>";
     if (winCond === "timed" && (state === "playing" || state === "paused")) {
       const left = Math.max(0, timedLimitMs - (performance.now() - playStart)), s = Math.ceil(left / 1000);
-      html += '<span class="chip" style="opacity:.75">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
+      meta += '<span class="meta-item">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
     }
-    html += '<span class="chip" style="opacity:.55">' + DIFFS[difficulty].label + "</span>";
-    if ((state === "playing" || state === "paused" || state === "dying") && livesLeft != null) html += '<span class="chip" style="opacity:.8">Lives ' + Math.max(0, livesLeft) + "</span>";
-    html += items.map((it) => '<span class="chip"><i style="background:' + it.a.color.land + '"></i>' + (it.a.isBot ? "Bot " + (it.a.id - 1) : "You") + " " + it.pct.toFixed(1) + "%</span>").join("");
-    hud.innerHTML = html;
+    const lb = board.map((r) => {
+      const rank = ranked.indexOf(r) + 1, me = r.a.id === PLAYER_ID;
+      return '<div class="lb' + (me ? " me" : "") + (rank <= 3 ? " r" + rank : "") + '">' +
+        '<span class="lb-rank">' + rank + "</span>" +
+        '<span class="lb-dot" style="background:' + r.a.color.land + '"></span>' +
+        '<span class="lb-name">' + (me ? "You" : "Bot " + (r.a.id - 1)) + "</span>" +
+        '<span class="lb-pct">' + r.pct.toFixed(1) + "%</span></div>";
+    }).join("");
+    hud.innerHTML = '<span class="meta">' + meta + '</span><span class="lb-wrap">' + lb + "</span>";
   }
 
   // ===========================================================================
