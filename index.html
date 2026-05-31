@@ -58,21 +58,25 @@
   #menu .row { display: contents; }
   #menu .rlabel { text-align: right; font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; opacity: .45; }
   #menu .ctl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-  #menu .pills { display: flex; gap: 6px; }
-  #menu .pill, #menu .stepper button {
+  .pills { display: flex; gap: 6px; }
+  .pill, .stepper button {
     background: rgba(255,255,255,0.08); color: #cdd3df; border: 1px solid transparent;
     border-radius: 9px; cursor: pointer; font-family: inherit;
     transition: background .12s ease, color .12s ease, filter .12s ease, transform .08s ease;
   }
-  #menu .pill { padding: 7px 13px; font-size: 13px; font-weight: 600; }
-  #menu .pill:hover { background: rgba(255,255,255,0.16); color: #fff; }
-  #menu .pill.sel { background: var(--accent); color: #fff; }
-  #menu .pill.sel:hover { filter: brightness(1.08); }
-  #menu .stepper { display: flex; align-items: center; gap: 8px; }
-  #menu .stepper button { width: 30px; height: 30px; font-size: 18px; line-height: 1; color: #fff; }
-  #menu .stepper button:hover { background: rgba(255,255,255,0.18); }
-  #menu .stepper button:active { transform: scale(0.9); }
-  #menu #botCount, #menu #winValue { min-width: 42px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pill { padding: 7px 13px; font-size: 13px; font-weight: 600; }
+  .pill:hover { background: rgba(255,255,255,0.16); color: #fff; }
+  .pill.sel { background: var(--accent); color: #fff; }
+  .pill.sel:hover { filter: brightness(1.08); }
+  .pill:disabled, .stepper button:disabled { cursor: default; opacity: .5; }
+  .pill:disabled:hover { background: rgba(255,255,255,0.08); color: #cdd3df; }
+  .pill.sel:disabled { opacity: .85; }
+  .stepper { display: flex; align-items: center; gap: 8px; }
+  .stepper button { width: 30px; height: 30px; font-size: 18px; line-height: 1; color: #fff; }
+  .stepper button:hover { background: rgba(255,255,255,0.18); }
+  .stepper button:active { transform: scale(0.9); }
+  .stepper button:disabled:hover { background: rgba(255,255,255,0.08); }
+  #menu #botCount, #menu #winValue, .stepval { min-width: 42px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
   #startBtn {
     align-self: stretch; margin-top: 26px; background: var(--accent); color: #fff; border: none;
     border-radius: 11px; padding: 13px 32px; font-size: 16px; font-weight: 700; cursor: pointer; font-family: inherit;
@@ -110,6 +114,13 @@
   #lobbyJoinInfo { display: none; text-align: center; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
   #lobbyQr { width: 150px; height: 150px; border-radius: 8px; background: #fff; padding: 6px; }
   #lobbyUrl { margin-top: 7px; font-size: 12.5px; font-weight: 700; color: #9fb0c8; font-variant-numeric: tabular-nums; }
+  #lobbySettings { display: none; margin-bottom: 12px; }
+  #lobbySettings .lrow { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  #lobbySettings .llabel { width: 62px; font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; opacity: .5; text-align: right; flex-shrink: 0; }
+  #lobbySettings .lctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #lobbySettings .pill { padding: 5px 9px; font-size: 11.5px; }
+  #lobbySettings .stepper button { width: 26px; height: 26px; font-size: 15px; }
+  #lobbySettings .stepval { min-width: 38px; font-size: 12px; }
   @media (max-width: 480px) {
     #menu .panel { padding: 20px 18px 24px; max-width: calc(100vw - 16px); }
     #menuTitle { font-size: 36px; }
@@ -153,6 +164,7 @@
         </div>
         <div id="lobbyRoomPhase">
           <div id="lobbyStatus" class="lobbySub">Connecting…</div>
+          <div id="lobbySettings"></div>
           <div id="lobbyJoinInfo"><div class="lobbySub" style="margin:0 0 6px;">Other tablets — scan to join:</div><img id="lobbyQr" alt="Join QR code" /><div id="lobbyUrl"></div></div>
           <div id="lobbyList"></div>
           <button id="lobbyStart" class="lobbyPrimary">Start game</button>
@@ -452,8 +464,36 @@
     }).join("");
     const inLobby = lobbyData.state === "lobby", isHost = myConnId === lobbyData.hostConnId;
     if (!inLobby) { start.style.display = "none"; status.textContent = "A round is in progress — you'll join the next one."; }
-    else if (isHost) { start.style.display = "block"; status.textContent = lobbyData.players.length > 1 ? "Everyone in? Tap Start." : "Tap Start (bots will fill in)."; }
+    else if (isHost) { start.style.display = "block"; status.textContent = lobbyData.players.length > 1 ? "Everyone in? Set it up and tap Start." : "Set it up and tap Start (bots fill in)."; }
     else { start.style.display = "none"; status.textContent = "Waiting for the host to start…"; }
+    const sBox = document.getElementById("lobbySettings");
+    if (inLobby && lobbyData.settings) { sBox.style.display = "block"; renderLobbySettings(lobbyData.settings, isHost); }
+    else { sBox.style.display = "none"; }
+  }
+  function sendSettings(patch) {
+    if (!lobbyData || myConnId !== lobbyData.hostConnId || !ws || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({ t: "setSettings", settings: Object.assign({}, lobbyData.settings, patch) }));
+  }
+  function stepSetting(key, dir) {
+    const s = lobbyData.settings; if (!s) return;
+    if (key === "bots") sendSettings({ bots: Math.max(0, Math.min(8, s.bots + dir)) });
+    else if (key === "lives") sendSettings({ lives: Math.max(1, Math.min(10, s.lives + dir)) });
+    else if (key === "win") { if (s.win === "timed") sendSettings({ winSecs: Math.max(30, Math.min(600, s.winSecs + dir * 30)) }); else sendSettings({ winPct: Math.max(10, Math.min(100, s.winPct + dir * 5)) }); }
+  }
+  function renderLobbySettings(s, host) {
+    const box = document.getElementById("lobbySettings"), dis = host ? "" : " disabled";
+    const pills = (group, sel) => '<span class="pills">' + MENU_GROUPS[group].map((g) => '<button class="pill' + (g[0] === sel ? " sel" : "") + '"' + dis + ' data-set="' + group + '" data-val="' + g[0] + '">' + g[1] + "</button>").join("") + "</span>";
+    const step = (key, val) => '<span class="stepper"><button' + dis + ' data-step="' + key + '" data-dir="-1">&minus;</button><span class="stepval">' + val + '</span><button' + dis + ' data-step="' + key + '" data-dir="1">+</button></span>';
+    const row = (label, ctl) => '<div class="lrow"><span class="llabel">' + label + '</span><span class="lctl">' + ctl + "</span></div>";
+    box.innerHTML =
+      row("Difficulty", pills("difficulty", s.difficulty)) +
+      row("Board", pills("board", s.board)) +
+      row("Win", pills("win", s.win) + step("win", s.win === "timed" ? fmtTime(s.winSecs) : s.winPct + "%")) +
+      row("Bots", step("bots", s.bots)) +
+      row("Lives", step("lives", s.lives));
+    if (!host) return;
+    box.querySelectorAll("[data-set]").forEach((b) => { b.onclick = () => sendSettings({ [b.dataset.set]: b.dataset.val }); });
+    box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => stepSetting(b.dataset.step, +b.dataset.dir); });
   }
 
   function connectOnline() {

@@ -45,14 +45,14 @@ const httpServer = http.createServer((req, res) => {
 // --- game config (the lobby will make these adjustable in a later milestone) -
 const BOARD_DIMS = { small: [64, 40], medium: [84, 52], large: [108, 66] };
 const MAX_PLAYERS = 8;
-const CONFIG = {
+const CONFIG = {                // defaults; the host can change these in the lobby
   board: "medium",
-  difficulty: "easy",   // gentle bots (small, slow grabs) — kid-friendly default; tune later with the lobby
-  speedTick: 48,        // SPEED_TICK.normal — on-screen speed
-  bots: 4,              // AI bots added alongside the humans (capped so humans + bots <= MAX_PLAYERS)
-  winCond: "target",
-  winThreshold: 0.6,    // a clear leader wins and the round restarts — no endless bot steamroll
-  timedLimitMs: 120000,
+  difficulty: "easy",           // gentle bots by default (kid-friendly)
+  speedTick: 48,                // SPEED_TICK.normal — on-screen speed
+  bots: 4,                      // AI bots added alongside the humans (capped so humans + bots <= MAX_PLAYERS)
+  win: "target",                // 'target' | 'timed'
+  winPct: 60,                   // target % to win
+  winSecs: 120,                 // timed-mode seconds
   lives: 3,
   countdownMs: 1800,
 };
@@ -91,9 +91,12 @@ function pickHost() {
   const first = joinedConns()[0];
   room.hostConnId = first ? first.connId : null;
 }
+function lobbySettings() {
+  return { difficulty: CONFIG.difficulty, board: CONFIG.board, bots: CONFIG.bots, win: CONFIG.win, winPct: CONFIG.winPct, winSecs: CONFIG.winSecs, lives: CONFIG.lives };
+}
 function broadcastLobby() {
   pickHost();
-  broadcast({ t: "lobby", state: room.state, hostConnId: room.hostConnId, players: joinedConns().map((c) => ({ connId: c.connId, name: c.name })) });
+  broadcast({ t: "lobby", state: room.state, hostConnId: room.hostConnId, settings: lobbySettings(), players: joinedConns().map((c) => ({ connId: c.connId, name: c.name })) });
 }
 
 function packGrid(w) {
@@ -123,7 +126,7 @@ function buildRound() {
   const [COLS, ROWS] = BOARD_DIMS[CONFIG.board];
   const numBots = Math.max(0, Math.min(CONFIG.bots, MAX_PLAYERS - humanCount));
   const w = PaperSim.createWorld(
-    { COLS, ROWS, difficulty: CONFIG.difficulty, numBots, humanCount, winCond: CONFIG.winCond, winThreshold: CONFIG.winThreshold, timedLimitMs: CONFIG.timedLimitMs, lives: CONFIG.lives, mode: "online" },
+    { COLS, ROWS, difficulty: CONFIG.difficulty, numBots, humanCount, winCond: CONFIG.win, winThreshold: CONFIG.winPct / 100, timedLimitMs: CONFIG.winSecs * 1000, lives: CONFIG.lives, mode: "online" },
     { now, rng: Math.random }
   );
   w.buildWorld();
@@ -235,6 +238,17 @@ wss.on("connection", (ws) => {
     } else if (m.t === "start") {
       const c = room.conns.get(ws); if (!c) return;
       if (c.connId === room.hostConnId && (room.state === "lobby" || room.state === "over")) buildRound();
+    } else if (m.t === "setSettings") {
+      const c = room.conns.get(ws); if (!c || c.connId !== room.hostConnId || room.state !== "lobby") return;
+      const s = m.settings || {};
+      if (["easy", "normal", "hard", "extreme"].includes(s.difficulty)) CONFIG.difficulty = s.difficulty;
+      if (["small", "medium", "large"].includes(s.board)) CONFIG.board = s.board;
+      if (Number.isFinite(s.bots)) CONFIG.bots = Math.max(0, Math.min(MAX_PLAYERS, s.bots | 0));
+      if (s.win === "target" || s.win === "timed") CONFIG.win = s.win;
+      if (Number.isFinite(s.winPct)) CONFIG.winPct = Math.max(10, Math.min(100, Math.round(s.winPct / 5) * 5));
+      if (Number.isFinite(s.winSecs)) CONFIG.winSecs = Math.max(30, Math.min(600, Math.round(s.winSecs / 30) * 30));
+      if (Number.isFinite(s.lives)) CONFIG.lives = Math.max(1, Math.min(10, s.lives | 0));
+      broadcastLobby();
     } else if (m.t === "steer") {
       const c = room.conns.get(ws); if (!c || room.state !== "playing" || !room.world) return;
       const a = room.world.actorById[c.actorId];
