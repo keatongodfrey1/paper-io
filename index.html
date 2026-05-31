@@ -236,7 +236,7 @@
         id: i + 1, isBot: i > 0, color: i === 0 ? PLAYER_COL : botColor(i - 1),
         alive: true, speed: i > 0 ? sp : 1,
         x: homes[i].x, y: homes[i].y, homeCx: homes[i].x, homeCy: homes[i].y,
-        dx: 0, dy: 0, movedX: 0, movedY: 0, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+        dx: 0, dy: 0, movedX: 0, movedY: 0, prevX: homes[i].x, prevY: homes[i].y, trail: [], trailSet: new Set(), ai: { mode: "rest" },
       };
       actors.push(a); actorById[a.id] = a; stampHome(a);
     }
@@ -264,7 +264,7 @@
     if (cx < 0) return;   // board too full, skip this round
     const a = {
       id: nextId++, isBot: true, color: botColor(botSpawnCount++), alive: true, speed: DIFFS[difficulty].speed,
-      x: cx, y: cy, homeCx: cx, homeCy: cy, dx: 0, dy: 0, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+      x: cx, y: cy, homeCx: cx, homeCy: cy, dx: 0, dy: 0, prevX: cx, prevY: cy, trail: [], trailSet: new Set(), ai: { mode: "rest" },
     };
     actors.push(a); actorById[a.id] = a; stampHome(a);
     const now = performance.now();
@@ -284,6 +284,7 @@
       if (own.length) { const s = own[(Math.random() * own.length) | 0]; player.x = s[0]; player.y = s[1]; }
       else { const h = regionHomes(1)[0]; player.homeCx = h.x; player.homeCy = h.y; stampHome(player); player.x = h.x; player.y = h.y; }
     }
+    player.prevX = player.x; player.prevY = player.y;
     state = "playing"; last = performance.now(); acc = 0;
   }
 
@@ -403,6 +404,7 @@
     if (state !== "playing") return;
     for (const a of actors) {
       if (!a.alive) continue;
+      a.prevX = a.x; a.prevY = a.y;   // capture tick-start position so render can glide smoothly
       const reps = a.isBot ? a.speed : 1;
       for (let r = 0; r < reps && a.alive; r++) {
         if (a.isBot) botThink(a);
@@ -611,7 +613,7 @@
   // ===========================================================================
   // RENDER
   // ===========================================================================
-  function draw(now) {
+  function draw(now, alpha) {
     ctx.save();
     const sAge = now - shakeStart;
     if (sAge < SHAKE_MS) { const k = (1 - sAge / SHAKE_MS) * SHAKE_MAG; ctx.translate((Math.random() * 2 - 1) * k, (Math.random() * 2 - 1) * k); }
@@ -640,7 +642,8 @@
 
     for (const a of actors) {
       if (!a.alive) continue;
-      const px = a.x * CELL, py = a.y * CELL;
+      const ix = a.prevX + (a.x - a.prevX) * alpha, iy = a.prevY + (a.y - a.prevY) * alpha;
+      const px = ix * CELL, py = iy * CELL;
       ctx.fillStyle = a.color.land; ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
       ctx.fillStyle = a.color.head; ctx.fillRect(px + CELL * 0.38, py + CELL * 0.38, CELL * 0.24, CELL * 0.24);
       ctx.lineWidth = 2.5; ctx.strokeStyle = a.isBot ? "#0b0e15" : "#ffffff"; ctx.strokeRect(px + 1.5, py + 1.5, CELL - 3, CELL - 3);
@@ -720,7 +723,7 @@
       else endGame("Game over", "Out of lives. Press Start to play again.");
     }
     if (now - hudLast > 200) { updateHUD(); hudLast = now; }
-    draw(now);
+    draw(now, state === "playing" ? Math.min(1, acc / tickMs) : 1);
     requestAnimationFrame(frame);
   }
 
