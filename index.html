@@ -446,11 +446,11 @@
     if (phase === "name") setTimeout(() => document.getElementById("lobbyName").focus(), 30);
     if (phase === "room") setupJoinInfo();
   }
-  // On the Mac (the host's screen), show a QR + URL so other tablets scan to join.
+  // Show a QR + the LAN URL in the lobby so other tablets can scan/type to join.
+  // (The server's /qr and /lan-url always encode the LAN address, so it works no
+  // matter how this page was opened — localhost on the Mac or the LAN IP.)
   function setupJoinInfo() {
     const box = document.getElementById("lobbyJoinInfo");
-    const onMac = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-    if (!onMac) { box.style.display = "none"; return; }
     box.style.display = "block";
     const img = document.getElementById("lobbyQr");
     if (!img.getAttribute("src")) img.src = "/qr";
