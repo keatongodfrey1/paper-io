@@ -211,6 +211,8 @@
   // a "render-world" rebuilt from its snapshots/ticks. Solo path is untouched.
   let onlineMode = false, ws = null, yourId = -1, onlineOver = null;
   let myConnId = -1, lobbyData = null, inRound = false, pendingName = "";
+  let reconnecting = false, reconnectTries = 0;
+  const TOKEN_KEY = "paperio_token";
   const isHttp = location.protocol === "http:" || location.protocol === "https:";
 
   const canvas = document.getElementById("game");
@@ -436,20 +438,33 @@
 
   function connectOnline() {
     ensureAudio();
-    onlineMode = true; onlineOver = null; yourId = -1; myConnId = -1; lobbyData = null; inRound = false;
+    onlineMode = true; onlineOver = null; yourId = -1; myConnId = -1; lobbyData = null; inRound = false; reconnecting = false; reconnectTries = 0;
     state = "connecting"; showLobby("room"); document.getElementById("lobbyStatus").textContent = "Connecting…";
+    openSocket();
+  }
+  function openSocket() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     try { ws = new WebSocket(proto + "//" + location.host); }
-    catch (_) { leaveOnline(); state = "start"; makeWorld(); showMenu("Paper.io", "Couldn't connect. Is the server running?"); return; }
-    ws.onopen = () => ws.send(JSON.stringify({ t: "join", name: pendingName }));
+    catch (_) { dropped(); return; }
+    ws.onopen = () => { let tok = null; try { tok = localStorage.getItem(TOKEN_KEY); } catch (_) {} ws.send(JSON.stringify({ t: "join", name: pendingName, token: tok || undefined })); };
     ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } handleServerMsg(m); };
-    ws.onclose = () => { if (onlineMode) { leaveOnline(); state = "start"; makeWorld(); showMenu("Paper.io", "Disconnected. Tap Play Online to rejoin."); } };
+    ws.onclose = () => { if (onlineMode) dropped(); };
     ws.onerror = () => {};
   }
-  function leaveOnline() { if (ws) { try { ws.onclose = null; ws.close(); } catch (_) {} } ws = null; onlineMode = false; yourId = -1; myConnId = -1; lobbyData = null; inRound = false; onlineOver = null; hideLobby(); }
+  function dropped() {
+    ws = null;
+    if (inRound || reconnecting) {   // mid-game blip → try to rejoin the same spot
+      reconnecting = true; reconnectTries++;
+      if (reconnectTries > 8) { leaveOnline(); state = "start"; makeWorld(); showMenu("Paper.io", "Lost connection to the server."); return; }
+      setTimeout(() => { if (onlineMode) openSocket(); }, Math.min(2000, 300 * reconnectTries));
+    } else {
+      leaveOnline(); state = "start"; makeWorld(); showMenu("Paper.io", "Disconnected. Tap Play Online to rejoin.");
+    }
+  }
+  function leaveOnline() { if (ws) { try { ws.onclose = null; ws.close(); } catch (_) {} } ws = null; onlineMode = false; yourId = -1; myConnId = -1; lobbyData = null; inRound = false; onlineOver = null; reconnecting = false; reconnectTries = 0; hideLobby(); }
 
   function handleServerMsg(m) {
-    if (m.t === "welcome") myConnId = m.connId;
+    if (m.t === "welcome") { myConnId = m.connId; reconnecting = false; reconnectTries = 0; if (m.token) { try { localStorage.setItem(TOKEN_KEY, m.token); } catch (_) {} } }
     else if (m.t === "lobby") {
       lobbyData = m;
       if (m.state === "lobby") { inRound = false; state = "lobby"; showLobby("room"); }
@@ -573,7 +588,8 @@
     ctx.restore();
 
     if (onlineMode) {
-      if (state === "connecting") centerText("Connecting…", "Joining the game on this WiFi");
+      if (reconnecting) centerText("Reconnecting…", "Hang tight — rejoining your game");
+      else if (state === "connecting") centerText("Connecting…", "Joining the game on this WiFi");
       else if (state === "countdown") centerText("Get ready!", "");
       else if (state === "over") centerText(onlineOver ? onlineOver[0] : "Round over", onlineOver ? onlineOver[1] : "");
     }

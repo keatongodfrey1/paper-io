@@ -61,7 +61,8 @@ const now = () => performance.now();
 const room = {
   world: null,
   state: "lobby",      // lobby | countdown | playing | over
-  conns: new Map(),    // ws -> { connId, name, actorId, joined }
+  conns: new Map(),    // ws -> seat (currently-connected sockets)
+  seats: new Map(),    // token -> seat (incl. recently-dropped, held for reconnect)
   hostConnId: null,
   nextConnId: 1,
   humanCount: 0,
@@ -70,6 +71,8 @@ const room = {
   prevGrid: null,
   last: 0, acc: 0, playStart: 0, lastSpawn: 0, countdownEnd: 0, overUntil: 0,
 };
+const GRACE_MS = 30000;   // hold a dropped player's spot this long for reconnect
+const randomToken = () => Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
 
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
@@ -124,7 +127,7 @@ function buildRound() {
   room.humanCount = humanCount;
   room.prevGrid = packGrid(w);
   // Participants (everyone in the lobby now) get a human actor; late joiners wait.
-  for (const c of room.conns.values()) c.actorId = null;
+  for (const s of room.seats.values()) s.actorId = null;
   humans.forEach((c, i) => { const a = w.actors[i]; c.actorId = a.id; a.name = c.name || a.name; });
   room.state = "countdown";
   room.countdownEnd = now() + CONFIG.countdownMs;
@@ -145,6 +148,8 @@ function gridDeltasOrFull() {
 
 function tick() {
   const t = now();
+  // expire reconnect grace: drop seats that dropped and never came back in time
+  for (const [tk, s] of room.seats) if (!s.ws && t - s.disconnectedAt > GRACE_MS) room.seats.delete(tk);
   const w = room.world;
   if (!w) return;
   const dt = Math.min(0.05, (t - room.last) / 1000); room.last = t;
@@ -191,7 +196,7 @@ function ensureTicking() {
   if (!room.timer) { room.last = now(); room.timer = setInterval(tick, TICK_MS); }
 }
 function maybeStopTicking() {
-  if (room.conns.size === 0 && room.timer) { clearInterval(room.timer); room.timer = null; room.world = null; room.state = "lobby"; }
+  if (room.conns.size === 0 && room.timer) { clearInterval(room.timer); room.timer = null; room.world = null; room.state = "lobby"; room.seats.clear(); room.hostConnId = null; }
 }
 
 // ===========================================================================
@@ -199,28 +204,47 @@ function maybeStopTicking() {
 // ===========================================================================
 const wss = new WebSocketServer({ server: httpServer });
 wss.on("connection", (ws) => {
-  const connId = room.nextConnId++;
-  room.conns.set(ws, { connId, name: "Player " + connId, actorId: null, joined: false });
-  send(ws, { t: "welcome", connId });
-  ensureTicking();
+  ensureTicking();   // the seat is created on "join" (which may carry a reconnect token)
   ws.on("message", (buf) => {
     let m; try { m = JSON.parse(buf.toString()); } catch (_) { return; }
-    const c = room.conns.get(ws); if (!c) return;
     if (m.t === "join") {
       const nm = (typeof m.name === "string" ? m.name.slice(0, 16).trim() : "");
-      c.name = nm || ("Player " + c.connId);
-      c.joined = true;
-      pickHost();
-      broadcastLobby();
+      let seat = (m.token && room.seats.get(m.token)) || null;
+      if (seat) {
+        // Reconnect: reclaim the existing seat (and its actor, if a round is live).
+        if (seat.ws && seat.ws !== ws) { room.conns.delete(seat.ws); try { seat.ws.close(); } catch (_) {} }
+        seat.ws = ws; seat.disconnectedAt = 0; seat.joined = true; if (nm) seat.name = nm;
+        room.conns.set(ws, seat);
+        send(ws, { t: "welcome", connId: seat.connId, token: seat.token });
+        if (room.world && (room.state === "countdown" || room.state === "playing" || room.state === "over") && seat.actorId != null) {
+          send(ws, { t: "joined", yourActorId: seat.actorId, connId: seat.connId });
+          snapshotFor(ws);   // resync the live round mid-game
+        }
+      } else {
+        // New player: fresh seat + a reconnect token to remember it by.
+        const connId = room.nextConnId++, token = randomToken();
+        seat = { connId, token, name: nm || ("Player " + connId), ws, joined: true, actorId: null, disconnectedAt: 0 };
+        room.seats.set(token, seat); room.conns.set(ws, seat);
+        send(ws, { t: "welcome", connId, token });
+      }
+      pickHost(); broadcastLobby();
     } else if (m.t === "start") {
+      const c = room.conns.get(ws); if (!c) return;
       if (c.connId === room.hostConnId && (room.state === "lobby" || room.state === "over")) buildRound();
     } else if (m.t === "steer") {
-      if (room.state !== "playing" || !room.world) return;
+      const c = room.conns.get(ws); if (!c || room.state !== "playing" || !room.world) return;
       const a = room.world.actorById[c.actorId];
       if (a && a.alive && !a.dead && typeof m.h === "number" && isFinite(m.h)) room.world.steer(a, m.h);
     }
   });
-  ws.on("close", () => { room.conns.delete(ws); pickHost(); broadcastLobby(); maybeStopTicking(); });
+  ws.on("close", () => {
+    const seat = room.conns.get(ws); if (!seat) { maybeStopTicking(); return; }
+    room.conns.delete(ws); seat.ws = null; seat.disconnectedAt = now();
+    // Hold the seat for reconnect only if it owns an actor in a live round; else drop it now.
+    const inLiveRound = room.world && (room.state === "playing" || room.state === "countdown") && seat.actorId != null;
+    if (!inLiveRound) room.seats.delete(seat.token);
+    pickHost(); broadcastLobby(); maybeStopTicking();
+  });
   ws.on("error", () => {});
 });
 
