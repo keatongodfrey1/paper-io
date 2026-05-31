@@ -80,6 +80,8 @@
   }
   #startBtn:hover { background: #ff6178; transform: translateY(-1px); box-shadow: 0 10px 26px rgba(255,77,109,0.42); }
   #startBtn:active { transform: translateY(0); box-shadow: 0 6px 16px rgba(255,77,109,0.3); }
+  #onlineBtn { display: none; align-self: stretch; margin-top: 10px; background: rgba(255,255,255,0.08); color: #cdd3df; border: 1px solid rgba(255,255,255,0.16); border-radius: 11px; padding: 11px 32px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; transition: background .12s ease; }
+  #onlineBtn:hover { background: rgba(255,255,255,0.16); color: #fff; }
   #menu button:focus-visible, #menu .pill:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   #menuBtn { position: absolute; top: 8px; left: 8px; display: none; background: rgba(20,24,34,0.85); color: #cdd3df; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; z-index: 5; }
   #menuBtn:hover { background: rgba(40,46,62,0.95); }
@@ -117,6 +119,7 @@
           <div class="row"><span class="rlabel">Lives</span><div class="ctl"><span class="stepper"><button id="livesMinus">&minus;</button><span id="livesCount">1</span><button id="livesPlus">+</button></span></div></div>
         </div>
         <button id="startBtn">Start</button>
+        <button id="onlineBtn">Play Online — same WiFi</button>
       </div>
     </div>
   </div>
@@ -169,6 +172,11 @@
   let overTitle = "", overSub = "";
   let shakeStart = -1e9;
   let flashes = [];                       // render-only; fed by sim events
+
+  // ONLINE (LAN multiplayer): when on, the server runs the sim and we just render
+  // a "render-world" rebuilt from its snapshots/ticks. Solo path is untouched.
+  let onlineMode = false, ws = null, yourId = -1, onlineOver = null;
+  const isHttp = location.protocol === "http:" || location.protocol === "https:";
 
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -238,6 +246,9 @@
     document.getElementById("winPlus").onclick = () => { if (settings.win === "timed") settings.winSecs = Math.min(600, settings.winSecs + 30); else settings.winPct = Math.min(100, settings.winPct + 5); updateWinStepper(); };
     updateWinStepper();
     document.getElementById("startBtn").onclick = () => newGame();
+    const onlineBtn = document.getElementById("onlineBtn");
+    onlineBtn.style.display = isHttp ? "block" : "none";   // only when served by the server (not file://)
+    onlineBtn.onclick = () => connectOnline();
     menuBtn.onclick = () => toMenu();
     pauseBtn.onclick = togglePause;
   }
@@ -254,7 +265,7 @@
     menu.style.display = "flex"; menuBtn.style.display = "none"; pauseBtn.style.display = "none"; document.body.classList.add("menuing"); endDrag();
   }
   function hideMenu() { menu.style.display = "none"; document.body.classList.remove("menuing"); }
-  function toMenu() { state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
+  function toMenu() { if (onlineMode) { leaveOnline(); makeWorld(); } state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
   function togglePause() {
     if (state === "playing") { state = "paused"; pauseBtn.textContent = "Resume"; endDrag(); }
     else if (state === "paused") { state = "playing"; last = performance.now(); acc = 0; pauseBtn.textContent = "Pause"; }
@@ -268,6 +279,13 @@
     w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0], W: [0, -1], S: [0, 1], A: [-1, 0], D: [1, 0],
   };
   addEventListener("keydown", (e) => {
+    if (onlineMode) {
+      if (e.key === "Escape") { toMenu(); return; }
+      if (state !== "playing") return;
+      const dd = DIRS[e.key]; if (!dd) return;
+      e.preventDefault(); steer(Math.atan2(dd[1], dd[0]));
+      return;
+    }
     if (state === "start" || state === "over") {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); newGame(); }
       return;
@@ -284,6 +302,7 @@
 
   function steer(angle) {
     ensureAudio();
+    if (onlineMode) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "steer", h: angle })); return; }
     if (world && world.player) world.steer(world.player, angle);
   }
 
@@ -344,6 +363,74 @@
   function endGame(title, sub) { state = "over"; overTitle = title; overSub = sub; showMenu(title, sub); }
 
   // ===========================================================================
+  // ONLINE CLIENT (connect to the LAN server; render what it broadcasts)
+  // ===========================================================================
+  function colorFor(isBot, seed) { return isBot ? PaperSim.botColor(seed) : PaperSim.humanColor(seed); }
+
+  function connectOnline() {
+    ensureAudio();
+    onlineMode = true; onlineOver = null; yourId = -1;
+    hideMenu(); menuBtn.style.display = "block"; pauseBtn.style.display = "none";
+    state = "connecting";
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    try { ws = new WebSocket(proto + "//" + location.host); }
+    catch (_) { onlineMode = false; state = "start"; makeWorld(); showMenu("Paper.io", "Couldn't connect. Is the server running?"); return; }
+    ws.onopen = () => ws.send(JSON.stringify({ t: "join", name: "Player" }));
+    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } handleServerMsg(m); };
+    ws.onclose = () => { if (onlineMode) { onlineMode = false; ws = null; state = "start"; makeWorld(); showMenu("Paper.io", "Disconnected. Tap Play Online to rejoin."); } };
+    ws.onerror = () => {};
+  }
+  function leaveOnline() { if (ws) { try { ws.onclose = null; ws.close(); } catch (_) {} } ws = null; onlineMode = false; yourId = -1; onlineOver = null; }
+
+  function handleServerMsg(m) {
+    if (m.t === "joined") yourId = m.yourActorId;
+    else if (m.t === "snapshot") { makeRenderWorld(m); state = m.state === "playing" ? "playing" : (m.state === "over" ? "over" : "countdown"); }
+    else if (m.t === "tick") applyTick(m);
+    else if (m.t === "state") { if (m.state === "playing") state = "playing"; else if (m.state === "over") { state = "over"; finishOnline(m.endResult); } }
+  }
+  function addOrUpdateActor(rw, a) {
+    let o = rw.actorById[a.id];
+    if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, trail: a.trail || [], fx: a.fx, fy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy), prevX: Math.floor(a.fx), prevY: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
+    else { o.alive = a.alive; o.trail = a.trail || []; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
+  }
+  function makeRenderWorld(snap) {
+    COLS = snap.cols; ROWS = snap.rows;
+    CELL = Math.max(4, Math.floor(Math.min((Math.max(320, window.innerWidth - 40)) / COLS, (Math.max(320, window.innerHeight - 170)) / ROWS)));
+    canvas.width = COLS * CELL; canvas.height = ROWS * CELL;
+    tickMs = snap.tickMs; winCond = snap.winCond; winThreshold = snap.winThreshold; timedLimitMs = snap.timedLimitMs;
+    const grid = [];
+    for (let y = 0; y < ROWS; y++) { const row = new Array(COLS); for (let x = 0; x < COLS; x++) row[x] = snap.grid[y * COLS + x]; grid.push(row); }
+    const rw = {
+      online: true, grid: grid, actors: [], actorById: {}, COLS: COLS, ROWS: ROWS, player: null,
+      countTerritory() { const c = {}; for (let y = 0; y < this.ROWS; y++) for (let x = 0; x < this.COLS; x++) { const o = this.grid[y][x]; if (o) c[o] = (c[o] || 0) + 1; } return c; },
+      leaderId(counts) { counts = counts || this.countTerritory(); let bid = 0, bc = -1; for (const a of this.actors) { const n = counts[a.id] || 0; if (n > bc) { bc = n; bid = a.id; } } return bid; },
+    };
+    for (const a of snap.actors) addOrUpdateActor(rw, a);
+    rw.player = rw.actorById[yourId] || null;
+    world = rw; flashes = [];
+    playStart = performance.now();
+  }
+  function applyTick(m) {
+    if (!world || !world.online) return;
+    const seen = new Set();
+    for (const a of m.actors) { addOrUpdateActor(world, a); seen.add(a.id); }
+    for (const o of world.actors) if (!seen.has(o.id)) o.alive = false;
+    world.player = world.actorById[yourId] || world.player;
+    if (m.grid) { for (let y = 0; y < world.ROWS; y++) for (let x = 0; x < world.COLS; x++) world.grid[y][x] = m.grid[y * world.COLS + x]; }
+    else if (m.gridDeltas) { const d = m.gridDeltas; for (let i = 0; i < d.length; i += 2) { const idx = d[i]; world.grid[(idx / world.COLS) | 0][idx % world.COLS] = d[i + 1]; } }
+    if (m.events && m.events.length) { const t = performance.now(); for (const ev of m.events) applyJuice(ev, t); }
+  }
+  function finishOnline(r) {
+    let title = "Round over", sub = "Next round starting…";
+    if (r) {
+      const nm = (id) => (id === yourId ? "You" : (world.actorById[id] ? world.actorById[id].name : "Someone"));
+      if (r.reason === "target") title = r.winnerId === yourId ? "You win!" : nm(r.winnerId) + " wins";
+      else if (r.reason === "timed") title = r.winnerId === yourId ? "Time! You win" : "Time! " + nm(r.winnerId) + " wins";
+    }
+    onlineOver = [title, sub];
+  }
+
+  // ===========================================================================
   // SOUND
   // ===========================================================================
   let audio = null;
@@ -396,7 +483,7 @@
     for (const a of actors) {
       if (!a.alive) continue;
       let cxp, cyp;   // head center, px
-      if (a === player) { cxp = a.fx * CELL; cyp = a.fy * CELL; }
+      if (world.online || a === player) { cxp = a.fx * CELL; cyp = a.fy * CELL; }
       else { cxp = (a.prevX + (a.x - a.prevX) * alpha + 0.5) * CELL; cyp = (a.prevY + (a.y - a.prevY) * alpha + 0.5) * CELL; }
       const S = CELL - 4, P = CELL * 0.24;
       ctx.fillStyle = a.color.land; ctx.fillRect(cxp - S / 2, cyp - S / 2, S, S);
@@ -406,7 +493,12 @@
 
     ctx.restore();
 
-    if (state === "dying") { ctx.globalAlpha = 0.5 * Math.max(0, 1 - (now - phaseStart) / DEATH_MS); ctx.fillStyle = "#ff2030"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1; }
+    if (onlineMode) {
+      if (state === "connecting") centerText("Connecting…", "Joining the game on this WiFi");
+      else if (state === "countdown") centerText("Get ready!", "");
+      else if (state === "over") centerText(onlineOver ? onlineOver[0] : "Round over", onlineOver ? onlineOver[1] : "");
+    }
+    else if (state === "dying") { ctx.globalAlpha = 0.5 * Math.max(0, 1 - (now - phaseStart) / DEATH_MS); ctx.fillStyle = "#ff2030"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1; }
     else if (state === "paused") centerText("Paused", "Tap Resume or press Space");
     else if (state === "countdown") {
       const e = now - phaseStart;
@@ -448,7 +540,7 @@
       return '<div class="lb' + (isMe ? " me" : "") + (rank <= 3 ? " r" + rank : "") + '">' +
         '<span class="lb-rank">' + rank + "</span>" +
         '<span class="lb-dot" style="background:' + r.a.color.land + '"></span>' +
-        '<span class="lb-name">' + (isMe ? "You" : "Bot " + (r.a.id - 1)) + "</span>" +
+        '<span class="lb-name">' + (isMe ? "You" : (r.a.name || ("Bot " + (r.a.id - 1)))) + "</span>" +
         '<span class="lb-pct">' + r.pct.toFixed(1) + "%</span></div>";
     }).join("");
     hud.innerHTML = '<span class="meta">' + meta + '</span><span class="lb-wrap">' + lb + "</span>";
@@ -459,6 +551,12 @@
   // ===========================================================================
   let last = performance.now(), acc = 0, hudLast = 0;
   function frame(now) {
+    if (onlineMode) {
+      if (world && now - hudLast > 200) { updateHUD(); hudLast = now; }
+      if (world) draw(now, 1);
+      requestAnimationFrame(frame);
+      return;
+    }
     if (state === "countdown" && now - phaseStart >= COUNTDOWN_TOTAL) { state = "playing"; last = now; acc = 0; playStart = now; lastSpawn = now; }
     if (state === "playing") {
       const dtMs = now - last; acc += dtMs; last = now;

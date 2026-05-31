@@ -379,11 +379,17 @@
         w.emit({ type: "endgame", reason: "wiped", leaderId: w.endResult.leaderId });
         return;
       }
-      // Any actor squeezed to zero land is out (game continues for the rest).
+      // Any actor squeezed to zero land. Bots are out for good; an online human
+      // loses a life and respawns with a fresh home if any lives remain (so a bot
+      // eating your land isn't an instant, permanent knockout), else eliminated.
       for (const a of w.actors) {
-        if (!a.alive || (counts[a.id] || 0) !== 0) continue;
-        if (w.mode === "solo" && !a.isBot) continue;   // solo player handled above
-        if (a.isBot || w.mode === "online") { a.alive = false; if (!a.isBot) w.emit({ type: "eliminated", actorId: a.id }); }
+        if (!a.alive || a.dead || (counts[a.id] || 0) !== 0) continue;
+        if (w.mode === "solo" && !a.isBot) continue;   // solo player handled by the wiped-out branch above
+        if (a.isBot) { a.alive = false; continue; }
+        for (const c of a.trail) w.trailOwner.delete(w.key(c.x, c.y));
+        a.trail = []; a.trailSet.clear(); a.recent = [];
+        if (a.lives > 0) { a.lives--; a.dead = true; a.deadUntil = w.now() + DEATH_MS; w.emit({ type: "death", victimId: a.id, killerId: null, victimIsBot: false, cells: [] }); }
+        else { a.alive = false; w.emit({ type: "eliminated", actorId: a.id }); }
       }
       // Win by reaching the target share of the board.
       if (w.winCond === "target" && (counts[claimer.id] || 0) >= total * w.winThreshold) {
