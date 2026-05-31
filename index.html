@@ -216,7 +216,8 @@
   };
   const settings = { difficulty: "normal", board: "small", speed: "normal", win: "target", winPct: 100, winSecs: 120, bots: 3, lives: 1 };
 
-  const COLORS = { board: "#1b2030", grid: "#232a3d", flash: "#ffffff", trailEdge: "rgba(10,12,20,0.9)" };
+  const COLORS = { board: "#1b2030", grid: "#232a3d", flash: "#ffffff", trailEdge: "rgba(10,12,20,0.9)", void: "#0c0e15" };
+  const BOARD_DIMS = { small: [64, 40], medium: [84, 52], large: [108, 66] };   // fixed cell-counts; camera scrolls
 
   // ===========================================================================
   // ENGINE STATE
@@ -245,7 +246,6 @@
   function applySettings() {
     difficulty = settings.difficulty;
     numBots = settings.bots;
-    CELL = BOARD_CELL[settings.board];
     tickMs = SPEED_TICK[settings.speed];
     winCond = settings.win;                  // 'target' | 'timed'
     winThreshold = settings.winPct / 100;
@@ -253,13 +253,23 @@
     lives = settings.lives;
   }
 
-  function fitBoard() {
-    const availW = Math.max(320, window.innerWidth - 40);
-    const availH = Math.max(320, window.innerHeight - 170);
-    COLS = Math.max(28, Math.min(180, Math.floor(availW / CELL)));
-    ROWS = Math.max(20, Math.min(120, Math.floor(availH / CELL)));
-    canvas.width = COLS * CELL;
-    canvas.height = ROWS * CELL;
+  // The visible viewport (screen minus the title/HUD/hint chrome).
+  function availSize() {
+    const hud = document.getElementById("hud"), h1 = document.querySelector("h1"), hint = document.querySelector(".hint");
+    const chromeH = (h1 ? h1.offsetHeight : 28) + Math.max(46, hud ? hud.offsetHeight : 46) + (hint ? hint.offsetHeight : 22) + 22;
+    return { w: Math.max(300, window.innerWidth - 16), h: Math.max(240, window.innerHeight - chromeH) };
+  }
+  // Canvas = the visible viewport; CELL = chunky, comfortable cells. The board is
+  // usually larger than the viewport, so the camera scrolls to follow your head.
+  function applyViewport() {
+    const a = availSize();
+    canvas.width = a.w; canvas.height = a.h;
+    CELL = Math.max(13, Math.min(24, Math.round(Math.min(a.w, a.h) / 26)));
+  }
+  function fitBoard() {                       // solo: fixed board dims + scrolling camera
+    const d = BOARD_DIMS[settings.board] || BOARD_DIMS.medium;
+    COLS = d[0]; ROWS = d[1];
+    applyViewport();
   }
 
   function makeWorld() {
@@ -571,15 +581,7 @@
     if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, lives: a.lives, trail: a.trail || [], fx: a.fx, fy: a.fy, prevFx: a.fx, prevFy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
     else { o.alive = a.alive; o.lives = a.lives; o.trail = a.trail || []; o.prevFx = o.fx; o.prevFy = o.fy; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
   }
-  function sizeOnlineCanvas() {
-    if (!COLS || !ROWS) return;
-    const hud = document.getElementById("hud"), h1 = document.querySelector("h1"), hint = document.querySelector(".hint");
-    const chromeH = (h1 ? h1.offsetHeight : 28) + Math.max(46, hud ? hud.offsetHeight : 46) + (hint ? hint.offsetHeight : 22) + 22;
-    const availW = Math.max(300, window.innerWidth - 24);
-    const availH = Math.max(240, window.innerHeight - chromeH);
-    CELL = Math.max(4, Math.floor(Math.min(availW / COLS, availH / ROWS)));
-    canvas.width = COLS * CELL; canvas.height = ROWS * CELL;
-  }
+  function sizeOnlineCanvas() { if (COLS && ROWS) applyViewport(); }
   function makeRenderWorld(snap) {
     COLS = snap.cols; ROWS = snap.rows;
     sizeOnlineCanvas();
@@ -644,18 +646,32 @@
   // ===========================================================================
   function draw(now, alpha) {
     const grid = world.grid, actors = world.actors, actorById = world.actorById, player = world.player;
+    const oAlpha = world.online ? Math.min(1, (now - lastTickAt) / tickDt) : 1;   // smooth between server ticks
+    ctx.fillStyle = COLORS.void; ctx.fillRect(0, 0, canvas.width, canvas.height);  // area outside the board
     ctx.save();
     const sAge = now - shakeStart;
     if (sAge < SHAKE_MS) { const k = (1 - sAge / SHAKE_MS) * SHAKE_MAG; ctx.translate((Math.random() * 2 - 1) * k, (Math.random() * 2 - 1) * k); }
 
-    ctx.fillStyle = COLORS.board;
-    ctx.fillRect(-SHAKE_MAG, -SHAKE_MAG, canvas.width + 2 * SHAKE_MAG, canvas.height + 2 * SHAKE_MAG);
+    // Camera: follow the local player's head, clamped to the board (centered if the board fits).
+    const boardW = COLS * CELL, boardH = ROWS * CELL;
+    let hx = boardW / 2, hy = boardH / 2;
+    if (player) {
+      if (world.online) { hx = (player.prevFx + (player.fx - player.prevFx) * oAlpha) * CELL; hy = (player.prevFy + (player.fy - player.prevFy) * oAlpha) * CELL; }
+      else { hx = player.fx * CELL; hy = player.fy * CELL; }
+    }
+    const camX = boardW <= canvas.width ? (boardW - canvas.width) / 2 : Math.max(0, Math.min(boardW - canvas.width, hx - canvas.width / 2));
+    const camY = boardH <= canvas.height ? (boardH - canvas.height) / 2 : Math.max(0, Math.min(boardH - canvas.height, hy - canvas.height / 2));
+    ctx.translate(-Math.round(camX), -Math.round(camY));
 
-    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) { const o = grid[y][x]; if (o) { ctx.fillStyle = actorById[o].color.land; ctx.fillRect(x * CELL, y * CELL, CELL, CELL); } }
+    ctx.fillStyle = COLORS.board; ctx.fillRect(0, 0, boardW, boardH);   // board surface
+
+    const vx0 = Math.max(0, Math.floor(camX / CELL)), vx1 = Math.min(COLS, Math.ceil((camX + canvas.width) / CELL));
+    const vy0 = Math.max(0, Math.floor(camY / CELL)), vy1 = Math.min(ROWS, Math.ceil((camY + canvas.height) / CELL));
+    for (let y = vy0; y < vy1; y++) for (let x = vx0; x < vx1; x++) { const o = grid[y][x]; if (o) { ctx.fillStyle = actorById[o].color.land; ctx.fillRect(x * CELL, y * CELL, CELL, CELL); } }
 
     ctx.strokeStyle = COLORS.grid; ctx.lineWidth = 1; ctx.beginPath();
-    for (let x = 0; x <= COLS; x++) { ctx.moveTo(x * CELL + .5, 0); ctx.lineTo(x * CELL + .5, canvas.height); }
-    for (let y = 0; y <= ROWS; y++) { ctx.moveTo(0, y * CELL + .5); ctx.lineTo(canvas.width, y * CELL + .5); }
+    for (let x = vx0; x <= vx1; x++) { ctx.moveTo(x * CELL + .5, vy0 * CELL); ctx.lineTo(x * CELL + .5, vy1 * CELL); }
+    for (let y = vy0; y <= vy1; y++) { ctx.moveTo(vx0 * CELL, y * CELL + .5); ctx.lineTo(vx1 * CELL, y * CELL + .5); }
     ctx.stroke();
 
     for (const a of actors) {
@@ -670,7 +686,6 @@
     for (const f of flashes) { const age = now - f.start; if (age < 0) continue; ctx.globalAlpha = 1 - age / FLASH_MS; ctx.fillStyle = COLORS.flash; ctx.fillRect(f.x * CELL, f.y * CELL, CELL, CELL); }
     ctx.globalAlpha = 1;
 
-    const oAlpha = world.online ? Math.min(1, (now - lastTickAt) / tickDt) : 1;   // smooth between server ticks
     for (const a of actors) {
       if (!a.alive) continue;
       let cxp, cyp;   // head center, px
@@ -798,7 +813,7 @@
   applySettings();
   fitBoard();
   makeWorld();
-  addEventListener("resize", () => { if (onlineMode && COLS && ROWS) sizeOnlineCanvas(); });
+  addEventListener("resize", () => { if (COLS && ROWS) applyViewport(); });
   updateHUD();
   showMenu("Paper.io", "Set up your game, then press Start");
   requestAnimationFrame(frame);
