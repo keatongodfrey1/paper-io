@@ -89,6 +89,24 @@
   #pauseBtn:hover { background: rgba(40,46,62,0.95); }
   #joy { position: fixed; width: 84px; height: 84px; margin: -42px 0 0 -42px; border-radius: 50%; background: rgba(255,255,255,0.05); border: 2px solid rgba(255,255,255,0.16); display: none; pointer-events: none; z-index: 6; }
   #joyKnob { position: absolute; left: 42px; top: 42px; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; background: rgba(255,255,255,0.45); }
+  #lobby { position: absolute; inset: 0; border-radius: 10px; background: rgba(8,10,16,0.86); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 7; }
+  #lobby .panel { background: rgba(23,27,38,0.97); border: 1px solid rgba(255,255,255,0.09); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,0.55); padding: 28px 34px 22px; display: flex; flex-direction: column; align-items: stretch; min-width: 290px; max-width: calc(100vw - 24px); }
+  #lobbyTitle { font-size: 30px; font-weight: 800; letter-spacing: -0.6px; text-align: center; margin-bottom: 4px; }
+  #lobbyNamePhase, #lobbyRoomPhase { display: none; flex-direction: column; }
+  .lobbySub { font-size: 13px; opacity: .62; text-align: center; margin: 8px 0 14px; }
+  #lobbyName { font-family: inherit; font-size: 16px; text-align: center; padding: 11px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.06); color: #e7ebf3; margin-bottom: 12px; }
+  #lobbyName:focus { outline: none; border-color: var(--accent); }
+  .lobbyPrimary { align-self: stretch; background: var(--accent); color: #fff; border: none; border-radius: 11px; padding: 12px 28px; font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit; box-shadow: 0 8px 22px rgba(255,77,109,0.32); transition: background .12s ease, transform .1s ease; }
+  .lobbyPrimary:hover { background: #ff6178; transform: translateY(-1px); }
+  .lobbyPrimary:disabled { background: rgba(255,255,255,0.1); color: #8a90a0; box-shadow: none; cursor: default; transform: none; }
+  #lobbyList { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; max-height: 220px; overflow-y: auto; }
+  #lobbyList .lp { display: flex; align-items: center; gap: 9px; padding: 7px 11px; border-radius: 9px; background: rgba(255,255,255,0.05); }
+  #lobbyList .lp-dot { width: 11px; height: 11px; border-radius: 3px; }
+  #lobbyList .lp-name { font-weight: 700; font-size: 14px; }
+  #lobbyList .lp-tag { margin-left: auto; font-size: 10.5px; font-weight: 800; letter-spacing: .4px; opacity: .7; text-transform: uppercase; }
+  #lobbyList .lp.me { background: rgba(255,77,109,0.16); }
+  #lobbyLeave { margin-top: 12px; align-self: center; background: none; border: none; color: #8a90a0; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  #lobbyLeave:hover { color: #cdd3df; }
   @media (max-width: 480px) {
     #menu .panel { padding: 20px 18px 24px; max-width: calc(100vw - 16px); }
     #menuTitle { font-size: 36px; }
@@ -120,6 +138,22 @@
         </div>
         <button id="startBtn">Start</button>
         <button id="onlineBtn">Play Online — same WiFi</button>
+      </div>
+    </div>
+    <div id="lobby">
+      <div class="panel">
+        <div id="lobbyTitle">Play Together</div>
+        <div id="lobbyNamePhase">
+          <div class="lobbySub">Pick a name, then join the game on this WiFi.</div>
+          <input id="lobbyName" maxlength="16" placeholder="Your name" autocomplete="off" />
+          <button id="lobbyJoin" class="lobbyPrimary">Join</button>
+        </div>
+        <div id="lobbyRoomPhase">
+          <div id="lobbyStatus" class="lobbySub">Connecting…</div>
+          <div id="lobbyList"></div>
+          <button id="lobbyStart" class="lobbyPrimary">Start game</button>
+        </div>
+        <button id="lobbyLeave">Leave</button>
       </div>
     </div>
   </div>
@@ -176,6 +210,7 @@
   // ONLINE (LAN multiplayer): when on, the server runs the sim and we just render
   // a "render-world" rebuilt from its snapshots/ticks. Solo path is untouched.
   let onlineMode = false, ws = null, yourId = -1, onlineOver = null;
+  let myConnId = -1, lobbyData = null, inRound = false, pendingName = "";
   const isHttp = location.protocol === "http:" || location.protocol === "https:";
 
   const canvas = document.getElementById("game");
@@ -248,7 +283,11 @@
     document.getElementById("startBtn").onclick = () => newGame();
     const onlineBtn = document.getElementById("onlineBtn");
     onlineBtn.style.display = isHttp ? "block" : "none";   // only when served by the server (not file://)
-    onlineBtn.onclick = () => connectOnline();
+    onlineBtn.onclick = () => openJoin();
+    document.getElementById("lobbyJoin").onclick = () => doJoin();
+    document.getElementById("lobbyName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doJoin(); } });
+    document.getElementById("lobbyStart").onclick = () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "start" })); };
+    document.getElementById("lobbyLeave").onclick = () => toMenu();
     menuBtn.onclick = () => toMenu();
     pauseBtn.onclick = togglePause;
   }
@@ -265,7 +304,7 @@
     menu.style.display = "flex"; menuBtn.style.display = "none"; pauseBtn.style.display = "none"; document.body.classList.add("menuing"); endDrag();
   }
   function hideMenu() { menu.style.display = "none"; document.body.classList.remove("menuing"); }
-  function toMenu() { if (onlineMode) { leaveOnline(); makeWorld(); } state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
+  function toMenu() { const wasOnline = onlineMode; leaveOnline(); if (wasOnline) makeWorld(); state = "start"; showMenu("Paper.io", "Set up your game, then press Start"); }
   function togglePause() {
     if (state === "playing") { state = "paused"; pauseBtn.textContent = "Resume"; endDrag(); }
     else if (state === "paused") { state = "playing"; last = performance.now(); acc = 0; pauseBtn.textContent = "Pause"; }
@@ -366,27 +405,66 @@
   // ONLINE CLIENT (connect to the LAN server; render what it broadcasts)
   // ===========================================================================
   function colorFor(isBot, seed) { return isBot ? PaperSim.botColor(seed) : PaperSim.humanColor(seed); }
+  function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  // --- lobby overlay (name entry → waiting room with a host-controlled Start) ---
+  const lobbyEl = document.getElementById("lobby");
+  function showLobby(phase) {
+    menu.style.display = "none"; lobbyEl.style.display = "flex"; document.body.classList.add("menuing");
+    menuBtn.style.display = "none"; pauseBtn.style.display = "none";
+    document.getElementById("lobbyNamePhase").style.display = phase === "name" ? "flex" : "none";
+    document.getElementById("lobbyRoomPhase").style.display = phase === "room" ? "flex" : "none";
+    if (phase === "name") setTimeout(() => document.getElementById("lobbyName").focus(), 30);
+  }
+  function hideLobby() { lobbyEl.style.display = "none"; document.body.classList.remove("menuing"); }
+  function openJoin() { ensureAudio(); onlineMode = true; inRound = false; state = "lobby"; showLobby("name"); }
+  function doJoin() { pendingName = (document.getElementById("lobbyName").value || "").trim(); connectOnline(); }
+  function renderLobby() {
+    if (!lobbyData) return;
+    const start = document.getElementById("lobbyStart"), status = document.getElementById("lobbyStatus"), list = document.getElementById("lobbyList");
+    list.innerHTML = lobbyData.players.map((p, i) => {
+      const me = p.connId === myConnId, host = p.connId === lobbyData.hostConnId, col = PaperSim.humanColor(i).land;
+      const tag = host && me ? "host · you" : host ? "host" : me ? "you" : "";
+      return '<div class="lp' + (me ? " me" : "") + '"><span class="lp-dot" style="background:' + col + '"></span>' +
+        '<span class="lp-name">' + escapeHtml(p.name) + '</span><span class="lp-tag">' + tag + "</span></div>";
+    }).join("");
+    const inLobby = lobbyData.state === "lobby", isHost = myConnId === lobbyData.hostConnId;
+    if (!inLobby) { start.style.display = "none"; status.textContent = "A round is in progress — you'll join the next one."; }
+    else if (isHost) { start.style.display = "block"; status.textContent = lobbyData.players.length > 1 ? "Everyone in? Tap Start." : "Tap Start (bots will fill in)."; }
+    else { start.style.display = "none"; status.textContent = "Waiting for the host to start…"; }
+  }
 
   function connectOnline() {
     ensureAudio();
-    onlineMode = true; onlineOver = null; yourId = -1;
-    hideMenu(); menuBtn.style.display = "block"; pauseBtn.style.display = "none";
-    state = "connecting";
+    onlineMode = true; onlineOver = null; yourId = -1; myConnId = -1; lobbyData = null; inRound = false;
+    state = "connecting"; showLobby("room"); document.getElementById("lobbyStatus").textContent = "Connecting…";
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     try { ws = new WebSocket(proto + "//" + location.host); }
-    catch (_) { onlineMode = false; state = "start"; makeWorld(); showMenu("Paper.io", "Couldn't connect. Is the server running?"); return; }
-    ws.onopen = () => ws.send(JSON.stringify({ t: "join", name: "Player" }));
+    catch (_) { leaveOnline(); state = "start"; makeWorld(); showMenu("Paper.io", "Couldn't connect. Is the server running?"); return; }
+    ws.onopen = () => ws.send(JSON.stringify({ t: "join", name: pendingName }));
     ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } handleServerMsg(m); };
-    ws.onclose = () => { if (onlineMode) { onlineMode = false; ws = null; state = "start"; makeWorld(); showMenu("Paper.io", "Disconnected. Tap Play Online to rejoin."); } };
+    ws.onclose = () => { if (onlineMode) { leaveOnline(); state = "start"; makeWorld(); showMenu("Paper.io", "Disconnected. Tap Play Online to rejoin."); } };
     ws.onerror = () => {};
   }
-  function leaveOnline() { if (ws) { try { ws.onclose = null; ws.close(); } catch (_) {} } ws = null; onlineMode = false; yourId = -1; onlineOver = null; }
+  function leaveOnline() { if (ws) { try { ws.onclose = null; ws.close(); } catch (_) {} } ws = null; onlineMode = false; yourId = -1; myConnId = -1; lobbyData = null; inRound = false; onlineOver = null; hideLobby(); }
 
   function handleServerMsg(m) {
-    if (m.t === "joined") yourId = m.yourActorId;
-    else if (m.t === "snapshot") { makeRenderWorld(m); state = m.state === "playing" ? "playing" : (m.state === "over" ? "over" : "countdown"); }
+    if (m.t === "welcome") myConnId = m.connId;
+    else if (m.t === "lobby") {
+      lobbyData = m;
+      if (m.state === "lobby") { inRound = false; state = "lobby"; showLobby("room"); }
+      else if (!inRound) { state = "lobby"; showLobby("room"); }   // late joiner: a round is in progress
+      renderLobby();
+    }
+    else if (m.t === "joined") { yourId = m.yourActorId; inRound = true; }
+    else if (m.t === "snapshot") { makeRenderWorld(m); inRound = true; hideLobby(); state = m.state === "playing" ? "playing" : "countdown"; }
     else if (m.t === "tick") applyTick(m);
-    else if (m.t === "state") { if (m.state === "playing") state = "playing"; else if (m.state === "over") { state = "over"; finishOnline(m.endResult); } }
+    else if (m.t === "state") {
+      if (!inRound) return;
+      if (m.state === "playing") { state = "playing"; hideLobby(); }
+      else if (m.state === "countdown") { state = "countdown"; hideLobby(); }
+      else if (m.state === "over") { state = "over"; finishOnline(m.endResult); }
+    }
   }
   function addOrUpdateActor(rw, a) {
     let o = rw.actorById[a.id];
@@ -407,6 +485,7 @@
     };
     for (const a of snap.actors) addOrUpdateActor(rw, a);
     rw.player = rw.actorById[yourId] || null;
+    rw.diffLabel = snap.diffLabel;
     world = rw; flashes = [];
     playStart = performance.now();
   }
@@ -528,7 +607,8 @@
     const meIdx = ranked.findIndex((r) => r.a.id === me);
     if (meIdx >= 3) board.push(ranked[meIdx]);   // keep your own standing on the board if you've dropped out of the top 3
 
-    let meta = '<span class="meta-item">' + DIFFS[difficulty].label + "</span>";
+    const dlabel = (world.online && world.diffLabel) ? world.diffLabel : DIFFS[difficulty].label;
+    let meta = '<span class="meta-item">' + dlabel + "</span>";
     const livesLeft = world.player ? world.player.lives : lives;
     if ((state === "playing" || state === "paused" || state === "dying") && livesLeft != null) meta += '<span class="meta-item">Lives ' + Math.max(0, livesLeft) + "</span>";
     if (winCond === "timed" && (state === "playing" || state === "paused")) {

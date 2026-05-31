@@ -61,7 +61,9 @@ const now = () => performance.now();
 const room = {
   world: null,
   state: "lobby",      // lobby | countdown | playing | over
-  conns: new Map(),    // ws -> { name, actorId }
+  conns: new Map(),    // ws -> { connId, name, actorId, joined }
+  hostConnId: null,
+  nextConnId: 1,
   humanCount: 0,
   timer: null,
   seq: 0,
@@ -75,6 +77,18 @@ function broadcast(obj) {
 }
 function send(ws, obj) { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); }
 
+function joinedConns() { return [...room.conns.values()].filter((c) => c.joined); }
+function pickHost() {
+  // Host is the longest-present joined player; reassign if they left.
+  if (room.hostConnId && joinedConns().some((c) => c.connId === room.hostConnId)) return;
+  const first = joinedConns()[0];
+  room.hostConnId = first ? first.connId : null;
+}
+function broadcastLobby() {
+  pickHost();
+  broadcast({ t: "lobby", state: room.state, hostConnId: room.hostConnId, players: joinedConns().map((c) => ({ connId: c.connId, name: c.name })) });
+}
+
 function packGrid(w) {
   const flat = new Array(w.COLS * w.ROWS);
   for (let y = 0; y < w.ROWS; y++) for (let x = 0; x < w.COLS; x++) flat[y * w.COLS + x] = w.grid[y][x];
@@ -87,17 +101,18 @@ function snapshotFor(ws) {
   const w = room.world;
   send(ws, {
     t: "snapshot",
-    cols: w.COLS, rows: w.ROWS, tickMs: CONFIG.speedTick,
+    cols: w.COLS, rows: w.ROWS, tickMs: CONFIG.speedTick, diffLabel: PaperSim.DIFFS[CONFIG.difficulty].label,
     winCond: w.winCond, winThreshold: w.winThreshold, timedLimitMs: w.timedLimitMs,
     state: room.state, countdownMs: Math.max(0, room.countdownEnd - now()),
     actors: w.actors.map(actorWire), grid: packGrid(w),
   });
 }
 
-// (Re)build a fresh round sized to the humans currently connected + bots to fill.
+// Build a fresh round for everyone in the lobby right now (+ bots to fill).
 function buildRound() {
-  const humans = [...room.conns.values()];
-  const humanCount = Math.max(1, humans.length);
+  const humans = joinedConns();
+  if (humans.length === 0) return;
+  const humanCount = humans.length;
   const [COLS, ROWS] = BOARD_DIMS[CONFIG.board];
   const numBots = Math.max(0, Math.min(CONFIG.bots, MAX_PLAYERS - humanCount));
   const w = PaperSim.createWorld(
@@ -108,14 +123,15 @@ function buildRound() {
   room.world = w;
   room.humanCount = humanCount;
   room.prevGrid = packGrid(w);
-  // Assign each connected human to a human actor (ids 1..humanCount).
-  let i = 0;
-  for (const c of room.conns.values()) { const a = w.actors[i]; c.actorId = a.id; a.name = c.name || a.name; i++; }
+  // Participants (everyone in the lobby now) get a human actor; late joiners wait.
+  for (const c of room.conns.values()) c.actorId = null;
+  humans.forEach((c, i) => { const a = w.actors[i]; c.actorId = a.id; a.name = c.name || a.name; });
   room.state = "countdown";
   room.countdownEnd = now() + CONFIG.countdownMs;
   room.last = now(); room.acc = 0;
-  // Tell everyone who they are + the fresh world.
-  for (const [ws, c] of room.conns) { send(ws, { t: "joined", yourActorId: c.actorId, roomCode: "default" }); snapshotFor(ws); }
+  // Identity + fresh world ONLY to participants; others stay in the lobby.
+  for (const [ws, c] of room.conns) { if (c.actorId != null) { send(ws, { t: "joined", yourActorId: c.actorId, connId: c.connId }); snapshotFor(ws); } }
+  broadcastLobby();   // late joiners now see "round in progress"
   ensureTicking();
 }
 
@@ -167,7 +183,7 @@ function tick() {
       broadcast({ t: "state", state: "over", endResult: w.endResult });
     }
   } else if (room.state === "over") {
-    if (t >= room.overUntil && room.conns.size > 0) buildRound();   // auto-restart the next round
+    if (t >= room.overUntil) { room.state = "lobby"; room.world = null; broadcastLobby(); }   // back to the lobby; host starts the next round
   }
 }
 
@@ -183,20 +199,28 @@ function maybeStopTicking() {
 // ===========================================================================
 const wss = new WebSocketServer({ server: httpServer });
 wss.on("connection", (ws) => {
-  room.conns.set(ws, { name: "Player", actorId: null });
+  const connId = room.nextConnId++;
+  room.conns.set(ws, { connId, name: "Player " + connId, actorId: null, joined: false });
+  send(ws, { t: "welcome", connId });
+  ensureTicking();
   ws.on("message", (buf) => {
     let m; try { m = JSON.parse(buf.toString()); } catch (_) { return; }
     const c = room.conns.get(ws); if (!c) return;
     if (m.t === "join") {
-      c.name = (typeof m.name === "string" ? m.name.slice(0, 16) : "Player") || "Player";
-      buildRound();   // (re)start a round sized to everyone here now
+      const nm = (typeof m.name === "string" ? m.name.slice(0, 16).trim() : "");
+      c.name = nm || ("Player " + c.connId);
+      c.joined = true;
+      pickHost();
+      broadcastLobby();
+    } else if (m.t === "start") {
+      if (c.connId === room.hostConnId && (room.state === "lobby" || room.state === "over")) buildRound();
     } else if (m.t === "steer") {
       if (room.state !== "playing" || !room.world) return;
       const a = room.world.actorById[c.actorId];
       if (a && a.alive && !a.dead && typeof m.h === "number" && isFinite(m.h)) room.world.steer(a, m.h);
     }
   });
-  ws.on("close", () => { room.conns.delete(ws); maybeStopTicking(); });
+  ws.on("close", () => { room.conns.delete(ws); pickHost(); broadcastLobby(); maybeStopTicking(); });
   ws.on("error", () => {});
 });
 
