@@ -90,6 +90,7 @@
           <div class="row"><span class="rlabel">Speed</span><div class="ctl"><span class="pills" data-group="speed"></span></div></div>
           <div class="row"><span class="rlabel">Win</span><div class="ctl"><span class="pills" data-group="win"></span><span class="stepper"><button id="winMinus">&minus;</button><span id="winValue">100%</span><button id="winPlus">+</button></span></div></div>
           <div class="row"><span class="rlabel">Bots</span><div class="ctl"><span class="stepper"><button id="botMinus">&minus;</button><span id="botCount">3</span><button id="botPlus">+</button></span></div></div>
+          <div class="row"><span class="rlabel">Lives</span><div class="ctl"><span class="stepper"><button id="livesMinus">&minus;</button><span id="livesCount">1</span><button id="livesPlus">+</button></span></div></div>
         </div>
         <button id="startBtn">Start</button>
       </div>
@@ -130,10 +131,10 @@
     speed: [["slow", "Slow"], ["normal", "Normal"], ["fast", "Fast"]],
     win: [["target", "Target %"], ["timed", "Timed"]],
   };
-  const settings = { difficulty: "normal", board: "small", speed: "normal", win: "target", winPct: 100, winSecs: 120, bots: 3 };
+  const settings = { difficulty: "normal", board: "small", speed: "normal", win: "target", winPct: 100, winSecs: 120, bots: 3, lives: 1 };
 
   // resolved each game from settings
-  let difficulty, numBots, CELL, tickMs, winCond, winThreshold, timedLimitMs;
+  let difficulty, numBots, CELL, tickMs, winCond, winThreshold, timedLimitMs, livesLeft;
 
   const PLAYER_COL = { land: "#ff4d6d", trail: "#ff8fa6", head: "#ffd1da" };
   function botColor(i) { const h = Math.round((i * 137.508 + 25) % 360); return { land: "hsl(" + h + ",66%,56%)", trail: "hsl(" + h + ",82%,72%)", head: "hsl(" + h + ",90%,86%)" }; }
@@ -165,6 +166,7 @@
     winCond = settings.win;                  // 'target' | 'timed'
     winThreshold = settings.winPct / 100;
     timedLimitMs = settings.winSecs * 1000;
+    livesLeft = settings.lives;
   }
 
   function fitBoard() {
@@ -210,7 +212,7 @@
         id: i + 1, isBot: i > 0, color: i === 0 ? PLAYER_COL : botColor(i - 1),
         alive: true, speed: i > 0 ? sp : 1,
         x: homes[i].x, y: homes[i].y, homeCx: homes[i].x, homeCy: homes[i].y,
-        dx: 0, dy: 0, trail: [], trailSet: new Set(), ai: { mode: "rest" },
+        dx: 0, dy: 0, movedX: 0, movedY: 0, trail: [], trailSet: new Set(), ai: { mode: "rest" },
       };
       actors.push(a); actorById[a.id] = a; stampHome(a);
     }
@@ -245,6 +247,22 @@
     for (let yy = cy - r; yy <= cy + r; yy++) for (let xx = cx - r; xx <= cx + r; xx++) if (inBounds(xx, yy)) flashes.push({ x: xx, y: yy, start: now });
   }
 
+  // Lost a life but lives remain: keep your territory, drop back on a safe owned
+  // cell, clear the spent trail, and resume the SAME game (bots and scores intact).
+  function respawnPlayer() {
+    player.trail = []; player.trailSet.clear();
+    player.dx = 0; player.dy = 0; player.movedX = 0; player.movedY = 0;
+    if (inBounds(player.homeCx, player.homeCy) && grid[player.homeCy][player.homeCx] === PLAYER_ID) {
+      player.x = player.homeCx; player.y = player.homeCy;
+    } else {
+      const own = [];
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (grid[y][x] === PLAYER_ID) own.push([x, y]);
+      if (own.length) { const s = own[(Math.random() * own.length) | 0]; player.x = s[0]; player.y = s[1]; }
+      else { const h = regionHomes(1)[0]; player.homeCx = h.x; player.homeCy = h.y; stampHome(player); player.x = h.x; player.y = h.y; }
+    }
+    state = "playing"; last = performance.now(); acc = 0;
+  }
+
   function newGame() {
     ensureAudio(); applySettings(); hideMenu(); menuBtn.style.display = "block";
     fitBoard(); buildWorld(); updateHUD();
@@ -272,6 +290,10 @@
     botCountEl.textContent = settings.bots;
     document.getElementById("botMinus").onclick = () => { settings.bots = Math.max(0, settings.bots - 1); botCountEl.textContent = settings.bots; };
     document.getElementById("botPlus").onclick = () => { settings.bots = Math.min(MAX_BOTS, settings.bots + 1); botCountEl.textContent = settings.bots; };
+    const livesCountEl = document.getElementById("livesCount");
+    livesCountEl.textContent = settings.lives;
+    document.getElementById("livesMinus").onclick = () => { settings.lives = Math.max(1, settings.lives - 1); livesCountEl.textContent = settings.lives; };
+    document.getElementById("livesPlus").onclick = () => { settings.lives = Math.min(10, settings.lives + 1); livesCountEl.textContent = settings.lives; };
     document.getElementById("winMinus").onclick = () => { if (settings.win === "timed") settings.winSecs = Math.max(30, settings.winSecs - 30); else settings.winPct = Math.max(10, settings.winPct - 5); updateWinStepper(); };
     document.getElementById("winPlus").onclick = () => { if (settings.win === "timed") settings.winSecs = Math.min(600, settings.winSecs + 30); else settings.winPct = Math.min(100, settings.winPct + 5); updateWinStepper(); };
     updateWinStepper();
@@ -317,6 +339,10 @@
     const d = DIRS[e.key];
     if (!d) return;
     e.preventDefault(); ensureAudio();
+    // ignore a 180-degree reversal of the way we're actually moving, so a panic-press
+    // of the back arrow can't send you straight onto your own trail (looping into your
+    // trail still kills you).
+    if ((player.movedX || player.movedY) && d[0] === -player.movedX && d[1] === -player.movedY) return;
     player.dx = d[0]; player.dy = d[1];
   }, { passive: false });
 
@@ -345,6 +371,7 @@
       return;
     }
     a.x = nx; a.y = ny;
+    a.movedX = a.dx; a.movedY = a.dy;   // remember the direction we actually moved
     const k = key(nx, ny);
     // cut check first, so you can kill an opponent even inside your own land
     const owner = trailOwner.get(k);
@@ -423,6 +450,7 @@
     if (!victim.isBot) {
       for (const c of victim.trail) trailOwner.delete(key(c.x, c.y));
       victim.trail = []; victim.trailSet.clear();
+      livesLeft--;
       state = "dying"; phaseStart = performance.now(); shakeStart = phaseStart; playDeathSound();
       return;
     }
@@ -602,6 +630,7 @@
       html += '<span class="chip" style="opacity:.75">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
     }
     html += '<span class="chip" style="opacity:.55">' + DIFFS[difficulty].label + "</span>";
+    if ((state === "playing" || state === "paused" || state === "dying") && livesLeft != null) html += '<span class="chip" style="opacity:.8">Lives ' + Math.max(0, livesLeft) + "</span>";
     html += items.map((it) => '<span class="chip"><i style="background:' + it.a.color.land + '"></i>' + (it.a.isBot ? "Bot " + (it.a.id - 1) : "You") + " " + it.pct.toFixed(1) + "%</span>").join("");
     hud.innerHTML = html;
   }
@@ -626,7 +655,10 @@
         lastSpawn = now;
       }
     } else { last = now; }
-    if (state === "dying" && now - phaseStart >= DEATH_MS) newGame();
+    if (state === "dying" && now - phaseStart >= DEATH_MS) {
+      if (livesLeft > 0) respawnPlayer();
+      else endGame("Game over", "Out of lives. Press Start to play again.");
+    }
     if (now - hudLast > 200) { updateHUD(); hudLast = now; }
     draw(now);
     requestAnimationFrame(frame);
