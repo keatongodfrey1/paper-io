@@ -289,7 +289,10 @@
     updateWinStepper();
     document.getElementById("startBtn").onclick = () => newGame();
     const onlineBtn = document.getElementById("onlineBtn");
-    onlineBtn.style.display = isHttp ? "block" : "none";   // only when served by the server (not file://)
+    onlineBtn.style.display = "none";
+    // Show "Play Online" only when a real game server is behind this page (it answers /lan-url).
+    // On GitHub Pages or file:// there's no server, so the button stays hidden (no dead-end).
+    if (isHttp) fetch("/lan-url").then((r) => (r.ok ? r.text() : Promise.reject())).then((t) => { if (t) onlineBtn.style.display = "block"; }).catch(() => {});
     onlineBtn.onclick = () => openJoin();
     document.getElementById("lobbyJoin").onclick = () => doJoin();
     document.getElementById("lobbyName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doJoin(); } });
