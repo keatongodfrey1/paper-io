@@ -107,7 +107,12 @@
   #lobbyList .lp { display: flex; align-items: center; gap: 9px; padding: 7px 11px; border-radius: 9px; background: rgba(255,255,255,0.05); }
   #lobbyList .lp-dot { width: 11px; height: 11px; border-radius: 3px; }
   #lobbyList .lp-name { font-weight: 700; font-size: 14px; }
-  #lobbyList .lp-tag { margin-left: auto; font-size: 10.5px; font-weight: 800; letter-spacing: .4px; opacity: .7; text-transform: uppercase; }
+  #lobbyList .lp-tag { margin-left: 8px; font-size: 10.5px; font-weight: 800; letter-spacing: .4px; opacity: .7; text-transform: uppercase; }
+  #lobbyList .lp-ready { margin-left: auto; font-size: 11px; font-weight: 700; opacity: .4; white-space: nowrap; }
+  #lobbyList .lp-ready.on { color: #2ee6a6; opacity: 1; }
+  #lobbyReady { margin-bottom: 8px; }
+  .lobbyPrimary.on { background: #1f9d63; box-shadow: 0 8px 22px rgba(31,157,99,0.30); }
+  .lobbyPrimary.on:hover { background: #25b873; }
   #lobbyList .lp.me { background: rgba(255,77,109,0.16); }
   #lobbyLeave { margin-top: 12px; align-self: center; background: none; border: none; color: #8a90a0; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
   #lobbyLeave:hover { color: #cdd3df; }
@@ -167,6 +172,7 @@
           <div id="lobbySettings"></div>
           <div id="lobbyJoinInfo"><div class="lobbySub" style="margin:0 0 6px;">Other tablets — scan to join:</div><img id="lobbyQr" alt="Join QR code" /><div id="lobbyUrl"></div></div>
           <div id="lobbyList"></div>
+          <button id="lobbyReady" class="lobbyPrimary">I'm ready</button>
           <button id="lobbyStart" class="lobbyPrimary">Start game</button>
         </div>
         <button id="lobbyLeave">Leave</button>
@@ -309,6 +315,7 @@
     document.getElementById("lobbyJoin").onclick = () => doJoin();
     document.getElementById("lobbyName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doJoin(); } });
     document.getElementById("lobbyStart").onclick = () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "start" })); };
+    document.getElementById("lobbyReady").onclick = () => { const me = lobbyData && lobbyData.players.find((p) => p.connId === myConnId); sendReady(!(me && me.ready)); };
     document.getElementById("lobbyLeave").onclick = () => toMenu();
     menuBtn.onclick = () => toMenu();
     pauseBtn.onclick = togglePause;
@@ -455,23 +462,38 @@
   function doJoin() { pendingName = (document.getElementById("lobbyName").value || "").trim(); connectOnline(); }
   function renderLobby() {
     if (!lobbyData) return;
-    const start = document.getElementById("lobbyStart"), status = document.getElementById("lobbyStatus"), list = document.getElementById("lobbyList");
+    const start = document.getElementById("lobbyStart"), readyBtn = document.getElementById("lobbyReady"),
+          status = document.getElementById("lobbyStatus"), list = document.getElementById("lobbyList");
+    const meP = lobbyData.players.find((p) => p.connId === myConnId);
     list.innerHTML = lobbyData.players.map((p, i) => {
-      const me = p.connId === myConnId, host = p.connId === lobbyData.hostConnId, col = PaperSim.humanColor(i).land;
-      const tag = host && me ? "host · you" : host ? "host" : me ? "you" : "";
-      return '<div class="lp' + (me ? " me" : "") + '"><span class="lp-dot" style="background:' + col + '"></span>' +
-        '<span class="lp-name">' + escapeHtml(p.name) + '</span><span class="lp-tag">' + tag + "</span></div>";
+      const isMe = p.connId === myConnId, host = p.connId === lobbyData.hostConnId, col = PaperSim.humanColor(i).land;
+      const who = host && isMe ? "host · you" : host ? "host" : isMe ? "you" : "";
+      const rdy = p.ready ? '<span class="lp-ready on">✓ ready</span>' : '<span class="lp-ready">not ready</span>';
+      return '<div class="lp' + (isMe ? " me" : "") + '"><span class="lp-dot" style="background:' + col + '"></span>' +
+        '<span class="lp-name">' + escapeHtml(p.name) + '</span>' + (who ? '<span class="lp-tag">' + who + "</span>" : "") + rdy + "</div>";
     }).join("");
-    const inLobby = lobbyData.state === "lobby", isHost = myConnId === lobbyData.hostConnId;
-    if (!inLobby) { start.style.display = "none"; status.textContent = "A round is in progress — you'll join the next one."; }
-    else if (isHost) { start.style.display = "block"; status.textContent = lobbyData.players.length > 1 ? "Everyone in? Set it up and tap Start." : "Set it up and tap Start (bots fill in)."; }
-    else { start.style.display = "none"; status.textContent = "Waiting for the host to start…"; }
+    const inLobby = lobbyData.state === "lobby";
     const sBox = document.getElementById("lobbySettings");
-    if (inLobby && lobbyData.settings) { sBox.style.display = "block"; renderLobbySettings(lobbyData.settings, isHost); }
+    if (inLobby && lobbyData.settings) { sBox.style.display = "block"; renderLobbySettings(lobbyData.settings); }
     else { sBox.style.display = "none"; }
+    if (!inLobby) {
+      start.style.display = "none"; readyBtn.style.display = "none";
+      status.textContent = "A round is in progress — you'll join the next one.";
+      return;
+    }
+    const iAmReady = !!(meP && meP.ready);
+    readyBtn.style.display = "block";
+    readyBtn.textContent = iAmReady ? "Ready ✓ — tap to undo" : "I'm ready";
+    readyBtn.classList.toggle("on", iAmReady);
+    start.style.display = "block";
+    start.disabled = !lobbyData.allReady;
+    const readyCount = lobbyData.players.filter((p) => p.ready).length, total = lobbyData.players.length;
+    if (lobbyData.allReady) status.textContent = total > 1 ? "Everyone's ready — anyone can tap Start!" : "Ready — tap Start (bots fill in).";
+    else status.textContent = readyCount + " of " + total + " ready — tap “I’m ready” when you’re set.";
   }
+  function sendReady(v) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "ready", ready: !!v })); }
   function sendSettings(patch) {
-    if (!lobbyData || myConnId !== lobbyData.hostConnId || !ws || ws.readyState !== 1) return;
+    if (!lobbyData || !ws || ws.readyState !== 1) return;
     ws.send(JSON.stringify({ t: "setSettings", settings: Object.assign({}, lobbyData.settings, patch) }));
   }
   function stepSetting(key, dir) {
@@ -480,10 +502,10 @@
     else if (key === "lives") sendSettings({ lives: Math.max(1, Math.min(10, s.lives + dir)) });
     else if (key === "win") { if (s.win === "timed") sendSettings({ winSecs: Math.max(30, Math.min(600, s.winSecs + dir * 30)) }); else sendSettings({ winPct: Math.max(10, Math.min(100, s.winPct + dir * 5)) }); }
   }
-  function renderLobbySettings(s, host) {
-    const box = document.getElementById("lobbySettings"), dis = host ? "" : " disabled";
-    const pills = (group, sel) => '<span class="pills">' + MENU_GROUPS[group].map((g) => '<button class="pill' + (g[0] === sel ? " sel" : "") + '"' + dis + ' data-set="' + group + '" data-val="' + g[0] + '">' + g[1] + "</button>").join("") + "</span>";
-    const step = (key, val) => '<span class="stepper"><button' + dis + ' data-step="' + key + '" data-dir="-1">&minus;</button><span class="stepval">' + val + '</span><button' + dis + ' data-step="' + key + '" data-dir="1">+</button></span>';
+  function renderLobbySettings(s) {
+    const box = document.getElementById("lobbySettings");
+    const pills = (group, sel) => '<span class="pills">' + MENU_GROUPS[group].map((g) => '<button class="pill' + (g[0] === sel ? " sel" : "") + '" data-set="' + group + '" data-val="' + g[0] + '">' + g[1] + "</button>").join("") + "</span>";
+    const step = (key, val) => '<span class="stepper"><button data-step="' + key + '" data-dir="-1">&minus;</button><span class="stepval">' + val + '</span><button data-step="' + key + '" data-dir="1">+</button></span>';
     const row = (label, ctl) => '<div class="lrow"><span class="llabel">' + label + '</span><span class="lctl">' + ctl + "</span></div>";
     box.innerHTML =
       row("Difficulty", pills("difficulty", s.difficulty)) +
@@ -491,7 +513,6 @@
       row("Win", pills("win", s.win) + step("win", s.win === "timed" ? fmtTime(s.winSecs) : s.winPct + "%")) +
       row("Bots", step("bots", s.bots)) +
       row("Lives", step("lives", s.lives));
-    if (!host) return;
     box.querySelectorAll("[data-set]").forEach((b) => { b.onclick = () => sendSettings({ [b.dataset.set]: b.dataset.val }); });
     box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => stepSetting(b.dataset.step, +b.dataset.dir); });
   }

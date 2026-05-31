@@ -96,7 +96,9 @@ function lobbySettings() {
 }
 function broadcastLobby() {
   pickHost();
-  broadcast({ t: "lobby", state: room.state, hostConnId: room.hostConnId, settings: lobbySettings(), players: joinedConns().map((c) => ({ connId: c.connId, name: c.name })) });
+  const humans = joinedConns();
+  const allReady = humans.length >= 1 && humans.every((c) => c.ready);
+  broadcast({ t: "lobby", state: room.state, hostConnId: room.hostConnId, settings: lobbySettings(), allReady, players: humans.map((c) => ({ connId: c.connId, name: c.name, ready: !!c.ready })) });
 }
 
 function packGrid(w) {
@@ -122,6 +124,7 @@ function snapshotFor(ws) {
 function buildRound() {
   const humans = joinedConns();
   if (humans.length === 0) return;
+  for (const c of room.conns.values()) c.ready = false;   // ready is consumed; everyone re-readies for the next round
   const humanCount = humans.length;
   const [COLS, ROWS] = BOARD_DIMS[CONFIG.board];
   const numBots = Math.max(0, Math.min(CONFIG.bots, MAX_PLAYERS - humanCount));
@@ -230,16 +233,22 @@ wss.on("connection", (ws) => {
       } else {
         // New player: fresh seat + a reconnect token to remember it by.
         const connId = room.nextConnId++, token = randomToken();
-        seat = { connId, token, name: nm || ("Player " + connId), ws, joined: true, actorId: null, disconnectedAt: 0 };
+        seat = { connId, token, name: nm || ("Player " + connId), ws, joined: true, actorId: null, disconnectedAt: 0, ready: false };
         room.seats.set(token, seat); room.conns.set(ws, seat);
         send(ws, { t: "welcome", connId, token });
       }
       pickHost(); broadcastLobby();
     } else if (m.t === "start") {
-      const c = room.conns.get(ws); if (!c) return;
-      if (c.connId === room.hostConnId && (room.state === "lobby" || room.state === "over")) buildRound();
+      const c = room.conns.get(ws); if (!c || !c.joined) return;
+      const humans = joinedConns();
+      const allReady = humans.length >= 1 && humans.every((h) => h.ready);
+      if (allReady && (room.state === "lobby" || room.state === "over")) buildRound();
+    } else if (m.t === "ready") {
+      const c = room.conns.get(ws); if (!c || !c.joined) return;
+      c.ready = !!m.ready;
+      broadcastLobby();
     } else if (m.t === "setSettings") {
-      const c = room.conns.get(ws); if (!c || c.connId !== room.hostConnId || room.state !== "lobby") return;
+      const c = room.conns.get(ws); if (!c || !c.joined || room.state !== "lobby") return;
       const s = m.settings || {};
       if (["easy", "normal", "hard", "extreme"].includes(s.difficulty)) CONFIG.difficulty = s.difficulty;
       if (["small", "medium", "large"].includes(s.board)) CONFIG.board = s.board;
