@@ -29,6 +29,7 @@
   #hud .lb-dot { width: 10px; height: 10px; border-radius: 3px; }
   #hud .lb-name { font-weight: 700; font-size: 13px; color: #e7ebf3; }
   #hud .lb-pct { font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; }
+  #hud .lb-lives { font-size: 11px; font-weight: 700; color: #ff7a90; margin: 0 2px; }
   #hud .lb.me { background: rgba(255,77,109,0.18); border-color: rgba(255,77,109,0.55); }
   #hud .lb.me .lb-name { color: #ff9bb0; }
   .hint { font-size: 12px; opacity: .5; text-align: center; }
@@ -181,7 +182,7 @@
   </div>
   <div class="hint">
     Arrow keys, <b>WASD</b>, or <b>drag</b> to move &nbsp;·&nbsp; loop back to claim &nbsp;·&nbsp;
-    cut a trail to take that land<span id="hintSolo"> &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu</span><span id="hintOnline" style="display:none"> &nbsp;·&nbsp; tap <b>Leave</b> to exit</span>
+    cut a trail to take that land<span id="hintSolo"> &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>R</b> restart &nbsp;·&nbsp; <b>Esc</b> menu</span><span id="hintOnline" style="display:none"> &nbsp;·&nbsp; <b>Esc</b> or tap <b>Leave</b> to exit</span>
   </div>
 
 <script src="sim.js"></script>
@@ -512,6 +513,7 @@
     box.innerHTML =
       row("Difficulty", pills("difficulty", s.difficulty)) +
       row("Board", pills("board", s.board)) +
+      row("Speed", pills("speed", s.speed)) +
       row("Win", pills("win", s.win) + step("win", s.win === "timed" ? fmtTime(s.winSecs) : s.winPct + "%")) +
       row("Bots", step("bots", s.bots)) +
       row("Lives", step("lives", s.lives));
@@ -566,8 +568,8 @@
   }
   function addOrUpdateActor(rw, a) {
     let o = rw.actorById[a.id];
-    if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, trail: a.trail || [], fx: a.fx, fy: a.fy, prevFx: a.fx, prevFy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
-    else { o.alive = a.alive; o.trail = a.trail || []; o.prevFx = o.fx; o.prevFy = o.fy; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
+    if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, lives: a.lives, trail: a.trail || [], fx: a.fx, fy: a.fy, prevFx: a.fx, prevFy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
+    else { o.alive = a.alive; o.lives = a.lives; o.trail = a.trail || []; o.prevFx = o.fx; o.prevFy = o.fy; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
   }
   function sizeOnlineCanvas() {
     if (!COLS || !ROWS) return;
@@ -726,14 +728,20 @@
   function updateHUD() {
     const counts = world.countTerritory(), total = COLS * ROWS, me = world.player ? world.player.id : -1;
     const ranked = world.actors.filter((a) => a.alive).map((a) => ({ a, pct: (counts[a.id] || 0) / total * 100 })).sort((p, q) => q.pct - p.pct);
-    const board = ranked.slice(0, 3);
-    const meIdx = ranked.findIndex((r) => r.a.id === me);
-    if (meIdx >= 3) board.push(ranked[meIdx]);   // keep your own standing on the board if you've dropped out of the top 3
+    let board;
+    if (world.online) {                            // online: show every human (with lives) + top bots
+      const humans = ranked.filter((r) => !r.a.isBot), bots = ranked.filter((r) => r.a.isBot);
+      board = humans.concat(bots).slice(0, Math.max(humans.length, 6));
+    } else {
+      board = ranked.slice(0, 3);
+      const meIdx = ranked.findIndex((r) => r.a.id === me);
+      if (meIdx >= 3) board.push(ranked[meIdx]);   // keep your own standing if you've dropped out of the top 3
+    }
 
     const dlabel = (world.online && world.diffLabel) ? world.diffLabel : DIFFS[difficulty].label;
     let meta = '<span class="meta-item">' + dlabel + "</span>";
     const livesLeft = world.player ? world.player.lives : lives;
-    if ((state === "playing" || state === "paused" || state === "dying") && livesLeft != null) meta += '<span class="meta-item">Lives ' + Math.max(0, livesLeft) + "</span>";
+    if (!world.online && (state === "playing" || state === "paused" || state === "dying") && livesLeft != null) meta += '<span class="meta-item">Lives ' + Math.max(0, livesLeft) + "</span>";
     if (winCond === "timed" && (state === "playing" || state === "paused")) {
       const left = Math.max(0, timedLimitMs - (performance.now() - playStart)), s = Math.ceil(left / 1000);
       meta += '<span class="meta-item">' + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + "</span>";
@@ -744,6 +752,7 @@
         '<span class="lb-rank">' + rank + "</span>" +
         '<span class="lb-dot" style="background:' + r.a.color.land + '"></span>' +
         '<span class="lb-name">' + (isMe ? "You" : (r.a.name || ("Bot " + (r.a.id - 1)))) + "</span>" +
+        ((world.online && !r.a.isBot && r.a.lives != null) ? '<span class="lb-lives">♥' + Math.max(0, r.a.lives) + "</span>" : "") +
         '<span class="lb-pct">' + r.pct.toFixed(1) + "%</span></div>";
     }).join("");
     hud.innerHTML = '<span class="meta">' + meta + '</span><span class="lb-wrap">' + lb + "</span>";
@@ -769,7 +778,7 @@
       if (!world.ended && winCond === "timed" && now - playStart >= timedLimitMs) world.finishTimed();
       if (!world.ended && numBots > 0 && now - lastSpawn >= SPAWN_INTERVAL) {
         let aliveBots = 0; for (const a of world.actors) if (a.isBot && a.alive) aliveBots++;
-        if (aliveBots < numBots) world.spawnBot();
+        if (aliveBots < numBots && world.topShare() < 0.8) world.spawnBot();
         lastSpawn = now;
       }
       for (const ev of world.drainEvents()) applyJuice(ev, now);

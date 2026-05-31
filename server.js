@@ -45,10 +45,11 @@ const httpServer = http.createServer((req, res) => {
 // --- game config (the lobby will make these adjustable in a later milestone) -
 const BOARD_DIMS = { small: [64, 40], medium: [84, 52], large: [108, 66] };
 const MAX_PLAYERS = 8;
+const SPEED_TICK = { slow: 72, normal: 48, fast: 33 };   // ms per game-speed step
 const CONFIG = {                // defaults; the host can change these in the lobby
   board: "medium",
   difficulty: "easy",           // gentle bots by default (kid-friendly)
-  speedTick: 48,                // SPEED_TICK.normal — on-screen speed
+  speed: "normal",              // slow | normal | fast (on-screen speed)
   bots: 4,                      // AI bots added alongside the humans (capped so humans + bots <= MAX_PLAYERS)
   win: "target",                // 'target' | 'timed'
   winPct: 60,                   // target % to win
@@ -56,6 +57,8 @@ const CONFIG = {                // defaults; the host can change these in the lo
   lives: 3,
   countdownMs: 1800,
 };
+const speedTick = () => SPEED_TICK[CONFIG.speed] || 48;
+const SPAWN_CAP_SHARE = 0.8;    // stop dropping in new bots once anyone holds this share
 const TICK_MS = 1000 / 30;        // authoritative 30 Hz tick
 const now = () => performance.now();
 
@@ -92,7 +95,7 @@ function pickHost() {
   room.hostConnId = first ? first.connId : null;
 }
 function lobbySettings() {
-  return { difficulty: CONFIG.difficulty, board: CONFIG.board, bots: CONFIG.bots, win: CONFIG.win, winPct: CONFIG.winPct, winSecs: CONFIG.winSecs, lives: CONFIG.lives };
+  return { difficulty: CONFIG.difficulty, board: CONFIG.board, speed: CONFIG.speed, bots: CONFIG.bots, win: CONFIG.win, winPct: CONFIG.winPct, winSecs: CONFIG.winSecs, lives: CONFIG.lives };
 }
 function broadcastLobby() {
   pickHost();
@@ -107,13 +110,13 @@ function packGrid(w) {
   return flat;
 }
 function actorWire(a) {
-  return { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, name: a.name, fx: a.isBot ? a.x + 0.5 : a.fx, fy: a.isBot ? a.y + 0.5 : a.fy, h: a.heading, alive: a.alive, dead: !!a.dead, trail: a.trail };
+  return { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, name: a.name, fx: a.isBot ? a.x + 0.5 : a.fx, fy: a.isBot ? a.y + 0.5 : a.fy, h: a.heading, alive: a.alive, dead: !!a.dead, lives: a.lives, trail: a.trail };
 }
 function snapshotFor(ws) {
   const w = room.world;
   send(ws, {
     t: "snapshot",
-    cols: w.COLS, rows: w.ROWS, tickMs: CONFIG.speedTick, diffLabel: PaperSim.DIFFS[CONFIG.difficulty].label,
+    cols: w.COLS, rows: w.ROWS, tickMs: speedTick(), diffLabel: PaperSim.DIFFS[CONFIG.difficulty].label,
     winCond: w.winCond, winThreshold: w.winThreshold, timedLimitMs: w.timedLimitMs,
     state: room.state, countdownMs: Math.max(0, room.countdownEnd - now()),
     actors: w.actors.map(actorWire), grid: packGrid(w),
@@ -171,10 +174,10 @@ function tick() {
 
   if (room.state === "playing") {
     // humans move continuously from their last heading
-    for (const c of room.conns.values()) { const a = w.actorById[c.actorId]; if (a && a.alive && !a.dead) w.moveContinuous(a, dt, CONFIG.speedTick); }
+    for (const c of room.conns.values()) { const a = w.actorById[c.actorId]; if (a && a.alive && !a.dead) w.moveContinuous(a, dt, speedTick()); }
     // bots step on the game-speed accumulator
-    room.acc += dt * 1000; if (room.acc > CONFIG.speedTick * 5) room.acc = CONFIG.speedTick * 5;
-    while (!w.ended && room.acc >= CONFIG.speedTick) { w.stepBots(); room.acc -= CONFIG.speedTick; }
+    room.acc += dt * 1000; if (room.acc > speedTick() * 5) room.acc = speedTick() * 5;
+    while (!w.ended && room.acc >= speedTick()) { w.stepBots(); room.acc -= speedTick(); }
     // per-actor human death → respawn (or eliminate); never freezes the others
     for (const c of room.conns.values()) {
       const a = w.actorById[c.actorId];
@@ -184,7 +187,7 @@ function tick() {
     // keep bots topped up
     if (!w.ended && t - room.lastSpawn >= w.SPAWN_INTERVAL) {
       let ab = 0; for (const a of w.actors) if (a.isBot && a.alive) ab++;
-      if (ab < Math.min(CONFIG.bots, MAX_PLAYERS - room.humanCount)) w.spawnBot();
+      if (ab < Math.min(CONFIG.bots, MAX_PLAYERS - room.humanCount) && w.topShare() < SPAWN_CAP_SHARE) w.spawnBot();
       room.lastSpawn = t;
     }
     if (!w.ended && w.winCond === "timed" && t - room.playStart >= w.timedLimitMs) w.finishTimed();
@@ -253,6 +256,7 @@ wss.on("connection", (ws) => {
       const s = m.settings || {};
       if (["easy", "normal", "hard", "extreme"].includes(s.difficulty)) CONFIG.difficulty = s.difficulty;
       if (["small", "medium", "large"].includes(s.board)) CONFIG.board = s.board;
+      if (["slow", "normal", "fast"].includes(s.speed)) CONFIG.speed = s.speed;
       if (Number.isFinite(s.bots)) CONFIG.bots = Math.max(0, Math.min(MAX_PLAYERS, s.bots | 0));
       if (s.win === "target" || s.win === "timed") CONFIG.win = s.win;
       if (Number.isFinite(s.winPct)) CONFIG.winPct = Math.max(10, Math.min(100, Math.round(s.winPct / 5) * 5));

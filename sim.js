@@ -165,7 +165,7 @@
       for (let t = 0; t < 60 && cx < 0; t++) {
         const x = pad + ((w.rng() * (w.COLS - 2 * pad)) | 0), y = pad + ((w.rng() * (w.ROWS - 2 * pad)) | 0);
         let ok = true;
-        for (let yy = y - r; yy <= y + r && ok; yy++) for (let xx = x - r; xx <= x + r; xx++) if (!inBounds(xx, yy) || w.grid[yy][xx] !== EMPTY) { ok = false; break; }
+        for (let yy = y - r; yy <= y + r && ok; yy++) for (let xx = x - r; xx <= x + r; xx++) if (!inBounds(xx, yy) || w.grid[yy][xx] !== EMPTY || w.trailOwner.has(key(xx, yy))) { ok = false; break; }
         if (ok) { cx = x; cy = y; }
       }
       if (cx < 0) return null;   // board too full, skip this round
@@ -290,6 +290,9 @@
       w.emit({ type: "claim", actorId: a.id, isBot: a.isBot, headX: a.x, headY: a.y, cells: captured });
       if (a.isBot) { a.homeCx = a.x; a.homeCy = a.y; a.ai = { mode: "rest" }; }
       a.trail = []; a.trailSet.clear(); a.recent = [];
+      // Anyone whose head we just enclosed is cut off from their own land — they're caught (dead).
+      const capSet = new Set(); for (const c of captured) capSet.add(c.x + "," + c.y);
+      for (const o of w.actors) { if (o === a || !o.alive || o.dead) continue; if (capSet.has(o.x + "," + o.y)) w.killActor(o, a); }
       for (const oid of affected) { const o = w.actorById[oid]; if (o && o.alive) w.pruneTerritory(o); }
       w.checkEndgame(a);
     };
@@ -391,6 +394,12 @@
       let bid = 0, bc = -1;
       for (const a of w.actors) { const n = counts[a.id] || 0; if (n > bc) { bc = n; bid = a.id; } }
       return bid;
+    };
+    // Largest single actor's share of the board (0..1) — used to stop spawning bots near the end.
+    w.topShare = function () {
+      const c = w.countTerritory(); let m = 0;
+      for (const k in c) if (c[k] > m) m = c[k];
+      return m / (w.COLS * w.ROWS);
     };
     w.checkEndgame = function (claimer) {
       const counts = w.countTerritory(), total = w.COLS * w.ROWS;
