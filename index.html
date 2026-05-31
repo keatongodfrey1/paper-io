@@ -145,8 +145,8 @@
     hard:    { label: "Hard",    legOut: [5, 9],  legSide: [3, 7], speed: 3 },
     extreme: { label: "Extreme", legOut: [6, 11], legSide: [4, 8], speed: 4 },
   };
-  const BOARD_CELL = { small: 16, medium: 12, large: 9 };
-  const SPEED_TICK = { slow: 110, normal: 75, fast: 50 };
+  const BOARD_CELL = { small: 10, medium: 8, large: 6 };   // finer cells...
+  const SPEED_TICK = { slow: 72, normal: 48, fast: 33 };   // ...with a faster tick = same on-screen speed but ~1.5x snappier turns
   const MAX_BOTS = 30;
 
   const MENU_GROUPS = {
