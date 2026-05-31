@@ -264,7 +264,7 @@
   function applyViewport() {
     const a = availSize();
     canvas.width = a.w; canvas.height = a.h;
-    CELL = Math.max(14, Math.min(22, Math.round(Math.min(a.w, a.h) / 26)));
+    CELL = Math.max(12, Math.min(18, Math.round(Math.min(a.w, a.h) / 30)));
   }
   function fitBoard() {                       // solo: fixed board dims + scrolling camera
     const d = BOARD_DIMS[settings.board] || BOARD_DIMS.medium;
