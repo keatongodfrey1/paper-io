@@ -107,6 +107,9 @@
   #lobbyList .lp.me { background: rgba(255,77,109,0.16); }
   #lobbyLeave { margin-top: 12px; align-self: center; background: none; border: none; color: #8a90a0; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
   #lobbyLeave:hover { color: #cdd3df; }
+  #lobbyJoinInfo { display: none; text-align: center; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  #lobbyQr { width: 150px; height: 150px; border-radius: 8px; background: #fff; padding: 6px; }
+  #lobbyUrl { margin-top: 7px; font-size: 12.5px; font-weight: 700; color: #9fb0c8; font-variant-numeric: tabular-nums; }
   @media (max-width: 480px) {
     #menu .panel { padding: 20px 18px 24px; max-width: calc(100vw - 16px); }
     #menuTitle { font-size: 36px; }
@@ -150,6 +153,7 @@
         </div>
         <div id="lobbyRoomPhase">
           <div id="lobbyStatus" class="lobbySub">Connecting…</div>
+          <div id="lobbyJoinInfo"><div class="lobbySub" style="margin:0 0 6px;">Other tablets — scan to join:</div><img id="lobbyQr" alt="Join QR code" /><div id="lobbyUrl"></div></div>
           <div id="lobbyList"></div>
           <button id="lobbyStart" class="lobbyPrimary">Start game</button>
         </div>
@@ -212,6 +216,7 @@
   let onlineMode = false, ws = null, yourId = -1, onlineOver = null;
   let myConnId = -1, lobbyData = null, inRound = false, pendingName = "";
   let reconnecting = false, reconnectTries = 0;
+  let lastTickAt = 0, tickDt = 33;        // for smooth interpolation between server ticks
   const TOKEN_KEY = "paperio_token";
   const isHttp = location.protocol === "http:" || location.protocol === "https:";
 
@@ -417,6 +422,18 @@
     document.getElementById("lobbyNamePhase").style.display = phase === "name" ? "flex" : "none";
     document.getElementById("lobbyRoomPhase").style.display = phase === "room" ? "flex" : "none";
     if (phase === "name") setTimeout(() => document.getElementById("lobbyName").focus(), 30);
+    if (phase === "room") setupJoinInfo();
+  }
+  // On the Mac (the host's screen), show a QR + URL so other tablets scan to join.
+  function setupJoinInfo() {
+    const box = document.getElementById("lobbyJoinInfo");
+    const onMac = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    if (!onMac) { box.style.display = "none"; return; }
+    box.style.display = "block";
+    const img = document.getElementById("lobbyQr");
+    if (!img.getAttribute("src")) img.src = "/qr";
+    const urlEl = document.getElementById("lobbyUrl");
+    if (!urlEl.textContent) fetch("/lan-url").then((r) => r.text()).then((u) => { urlEl.textContent = u; }).catch(() => {});
   }
   function hideLobby() { lobbyEl.style.display = "none"; document.body.classList.remove("menuing"); }
   function openJoin() { ensureAudio(); onlineMode = true; inRound = false; state = "lobby"; showLobby("name"); }
@@ -483,8 +500,8 @@
   }
   function addOrUpdateActor(rw, a) {
     let o = rw.actorById[a.id];
-    if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, trail: a.trail || [], fx: a.fx, fy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy), prevX: Math.floor(a.fx), prevY: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
-    else { o.alive = a.alive; o.trail = a.trail || []; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
+    if (!o) { o = { id: a.id, isBot: a.isBot, colorSeed: a.colorSeed, color: colorFor(a.isBot, a.colorSeed), name: a.name, alive: a.alive, trail: a.trail || [], fx: a.fx, fy: a.fy, prevFx: a.fx, prevFy: a.fy, heading: a.h, x: Math.floor(a.fx), y: Math.floor(a.fy) }; rw.actors.push(o); rw.actorById[a.id] = o; }
+    else { o.alive = a.alive; o.trail = a.trail || []; o.prevFx = o.fx; o.prevFy = o.fy; o.fx = a.fx; o.fy = a.fy; o.heading = a.h; o.x = Math.floor(a.fx); o.y = Math.floor(a.fy); }
   }
   function makeRenderWorld(snap) {
     COLS = snap.cols; ROWS = snap.rows;
@@ -506,13 +523,15 @@
   }
   function applyTick(m) {
     if (!world || !world.online) return;
+    const tnow = performance.now();
+    tickDt = Math.max(16, Math.min(80, lastTickAt ? tnow - lastTickAt : 33)); lastTickAt = tnow;
     const seen = new Set();
     for (const a of m.actors) { addOrUpdateActor(world, a); seen.add(a.id); }
     for (const o of world.actors) if (!seen.has(o.id)) o.alive = false;
     world.player = world.actorById[yourId] || world.player;
     if (m.grid) { for (let y = 0; y < world.ROWS; y++) for (let x = 0; x < world.COLS; x++) world.grid[y][x] = m.grid[y * world.COLS + x]; }
     else if (m.gridDeltas) { const d = m.gridDeltas; for (let i = 0; i < d.length; i += 2) { const idx = d[i]; world.grid[(idx / world.COLS) | 0][idx % world.COLS] = d[i + 1]; } }
-    if (m.events && m.events.length) { const t = performance.now(); for (const ev of m.events) applyJuice(ev, t); }
+    if (m.events && m.events.length) { for (const ev of m.events) applyJuice(ev, tnow); }
   }
   function finishOnline(r) {
     let title = "Round over", sub = "Next round starting…";
@@ -574,10 +593,12 @@
     for (const f of flashes) { const age = now - f.start; if (age < 0) continue; ctx.globalAlpha = 1 - age / FLASH_MS; ctx.fillStyle = COLORS.flash; ctx.fillRect(f.x * CELL, f.y * CELL, CELL, CELL); }
     ctx.globalAlpha = 1;
 
+    const oAlpha = world.online ? Math.min(1, (now - lastTickAt) / tickDt) : 1;   // smooth between server ticks
     for (const a of actors) {
       if (!a.alive) continue;
       let cxp, cyp;   // head center, px
-      if (world.online || a === player) { cxp = a.fx * CELL; cyp = a.fy * CELL; }
+      if (world.online) { cxp = (a.prevFx + (a.fx - a.prevFx) * oAlpha) * CELL; cyp = (a.prevFy + (a.fy - a.prevFy) * oAlpha) * CELL; }
+      else if (a === player) { cxp = a.fx * CELL; cyp = a.fy * CELL; }
       else { cxp = (a.prevX + (a.x - a.prevX) * alpha + 0.5) * CELL; cyp = (a.prevY + (a.y - a.prevY) * alpha + 0.5) * CELL; }
       const S = CELL - 4, P = CELL * 0.24;
       ctx.fillStyle = a.color.land; ctx.fillRect(cxp - S / 2, cyp - S / 2, S, S);

@@ -18,17 +18,21 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { WebSocketServer } = require("ws");
+const QRCode = require("qrcode");
 const PaperSim = require("./sim.js");
 
 const PORT = process.env.PORT || 8080;
 const HOST = process.env.HOST || "0.0.0.0";   // 0.0.0.0 so other devices on the WiFi can reach us
 const ROOT = __dirname;
+let lanUrl = "", qrSvg = "";                   // the join URL + its QR image (set on startup)
 
 // --- static file serving (allowlist only — never a generic file server) -----
 const SERVE = { "/": "index.html", "/index.html": "index.html", "/sim.js": "sim.js" };
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
 const httpServer = http.createServer((req, res) => {
   const url = (req.url || "/").split("?")[0];
+  if (url === "/lan-url") { res.writeHead(200, { "content-type": "text/plain" }); res.end(lanUrl); return; }
+  if (url === "/qr") { res.writeHead(200, { "content-type": "image/svg+xml" }); res.end(qrSvg); return; }
   const file = SERVE[url];
   if (!file) { res.writeHead(404); res.end("Not found"); return; }
   fs.readFile(path.join(ROOT, file), (err, data) => {
@@ -259,6 +263,8 @@ function lanIPs() {
 }
 httpServer.listen(PORT, HOST, () => {
   const ips = lanIPs();
+  lanUrl = "http://" + (ips[0] || "localhost") + ":" + PORT;
+  QRCode.toString(lanUrl, { type: "svg", margin: 1, width: 240, color: { dark: "#10131a", light: "#ffffff" } }, (err, svg) => { if (svg) qrSvg = svg; });
   console.log("");
   console.log("  🎮  Paper.io server is running!");
   console.log("");
